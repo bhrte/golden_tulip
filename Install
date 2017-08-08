@@ -6,7 +6,7 @@ CLS=`clear` > /dev/null  2>&1
 
 ./Remove > /dev/null  2>&1
 
-gcc -o sb_config sb_config.c 
+gcc -o sb_config sb_config.c
 
 if [ -f "sb_config" ]
 then
