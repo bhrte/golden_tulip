@@ -2,6 +2,7 @@
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
 #include <linux/module.h>
+#include <linux/sched/signal.h>
 #endif
 
 #include <linux/parport.h>
