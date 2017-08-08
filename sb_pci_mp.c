@@ -1667,7 +1667,9 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 				}
 	}
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 out_up:
+#endif
 	MP_STATE_UNLOCK(state);
 out:
 	return ret;
