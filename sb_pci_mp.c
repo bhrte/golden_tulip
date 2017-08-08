@@ -2720,7 +2720,10 @@ static void multi_enable_ms(struct sb_uart_port *port)
 
 static _INLINE_ void receive_chars(struct mp_port *mtpt, int *status )
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0))
+#else
 	struct tty_struct *tty = mtpt->port.info->tty;
+#endif
 	unsigned char lsr = *status;
 	int max_count = 256;
 	unsigned char ch;
