@@ -1,0 +1,46 @@
+# Multiports/PCI 
+# Remove script
+
+CLS=`clear` > /dev/null 2>&1
+
+echo $CLS
+echo -e "\nRemove Multiports PCI/PCIe Driver..!!"
+
+make clean > /dev/null 2>&1;
+make -C ./Util/ clean > /dev/null 2>&1;
+
+rmmod golden_tulip > /dev/null 2>&1
+
+#echo " "
+#echo -n "remove node(/etc/inittab) ....."
+#cp /etc/inittab /etc/inittab.old
+#grep -v 'ttyMP' < /etc/inittab.old > /etc/inittab
+#rm -f /etc/inittab.old
+#echo -e "done"
+
+echo -n "remove device(/dev)....."
+rm -f /dev/ttyMP*
+echo -e "done"
+
+echo -n "modify rc.local....."
+RC=/etc/rc.d/rc
+RCORG=/etc/rc.d/rc.org
+
+if [ -f "/etc/rc.d/rc.local" ]
+then
+        RC=/etc/rc.d/rc.local
+        RCORG=/etc/rc.d/rc.local.org
+fi
+if [ -f "/etc/rc.local" ]
+then
+        RC=/etc/rc.local
+        RCORG=/etc/rc.local.org
+fi
+
+cp  $RC $RCORG
+grep -v 'golden_tulip' < $RCORG > $RC
+rm -f $RCORG
+
+rm -f sb_config sb_config.o
+echo -e "done"
+

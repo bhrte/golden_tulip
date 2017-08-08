@@ -1,0 +1,53 @@
+# Multiport PCI/PCIe  
+# Installation Scripts 2009. 12.
+
+CLS=`clear` > /dev/null 2>&1
+
+./Remove > /dev/null 2>&1
+
+gcc -o sb_config sb_config.c
+make install > /dev/null 2>&1
+modprobe golden_tulip > /dev/null 2>&1
+./sb_config 
+make -C ./sysbas_multiport/ > /dev/null 2>&1
+
+CURR_PATH="modprobe golden_tulip"
+echo "$" > APL
+echo "a">> APL
+echo $CURR_PATH >> APL
+echo "." >> APL
+echo "w" >> APL
+echo "q" >> APL
+
+RC=/etc/rc.d/rc
+RCORG=/etc/rc.d/rc.org
+
+if [ -f "/etc/rc.d/rc.local" ]
+then 
+	RC=/etc/rc.d/rc.local
+	RCORG=/etc/rc.d/rc.local.org
+fi
+if [ -f "/etc/rc.local" ]
+then 
+	RC=/etc/rc.local
+	RCORG=/etc/rc.local.org
+fi
+
+cp $RC $RCORG
+grep -v '$CURR_PATH' < $RCORG > $RC
+rm -f $RCORG
+ed $RC < APL > /dev/null 2>&1
+rm -f APL
+
+if [ -f "/proc/tty/driver/golden_tulip" ]
+then
+	cat /proc/tty/driver/golden_tulip
+fi
+
+make clean > /dev/null 2>&1
+
+rm -f *.c
+rm -f *.h
+rm -f Makefile
+
+#Install end
