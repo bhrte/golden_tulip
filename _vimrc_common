@@ -1,0 +1,29 @@
+set modeline
+set tabstop=4
+set shiftwidth=4
+autocmd BufRead *.c,*.h,*.cpp,*.hpp   set cindent
+"autocmd BufRead *.c,*.h,*.cpp   set foldmethod=syntax
+"au BufWinLeave *.c,*.h,*.cpp mkview
+"au BufWinEnter *.c,*.h,*.cpp silent loadview
+autocmd BufRead *.py      set smartindent expandtab
+autocmd BufRead *.cmd     set syntax=tcsh
+autocmd BufRead *.db      set syntax=tcsh tabstop=2 shiftwidth=2 smartindent expandtab
+autocmd BufRead *.yml      set syntax=tcsh tabstop=2 shiftwidth=2 smartindent expandtab
+
+if has("cscope")
+  au QuickfixCmdPost make cs reset
+endif
+
+if exists("*matchadd")
+  " highlight trailing spaces
+  au BufNewFile,BufRead * let b:mtrailingws=matchadd('ErrorMsg', '\S\zs\s\+$', -1)
+  " empty line
+  "au BufNewFile,BufRead * let b:mtrailingws=matchadd('ErrorMsg', '^\s\+$', -1)
+  " highlight tabs between spaces
+  "au BufNewFile,BufRead * let b:mtabbeforesp=matchadd('ErrorMsg', '\v(\t+)\ze( +)', -1)
+  au BufNewFile,BufRead * let b:mtabaftersp=matchadd('ErrorMsg', '\v( +)\zs(\t+)', -1)
+
+  " disable matches in help buffers
+  au BufEnter,FileType help call clearmatches()
+endif
+" vim: set expandtab smartindent tabstop=2 shiftwidth=2:
