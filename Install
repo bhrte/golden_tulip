@@ -9,9 +9,10 @@ gcc -o sb_config sb_config.c
 make install > /dev/null 2>&1
 modprobe golden_tulip > /dev/null 2>&1
 ./sb_config 
-make -C ./sysbas_multiport/ > /dev/null 2>&1
+make -C ./async_multiport/ > /dev/null 2>&1
+make -C ./ioctl/ > /dev/null 2>&1
 
-CURR_PATH="modprobe golden_tulip"
+CURR_PATH="/etc/sb_mp"
 echo "$" > APL
 echo "a">> APL
 echo $CURR_PATH >> APL
@@ -32,6 +33,15 @@ then
 	RC=/etc/rc.local
 	RCORG=/etc/rc.local.org
 fi
+if [ -f "/etc/init.d/rc.local" ]
+then 
+	RC=/etc/init.d/rc.local
+	RCORG=/etc/init.d/rc.local.org
+fi
+
+cp sb_mp /etc/sb_mp
+chmod 777 /etc/sb_mp
+rm -f sb_mp
 
 cp $RC $RCORG
 grep -v '$CURR_PATH' < $RCORG > $RC
@@ -49,5 +59,6 @@ make clean > /dev/null 2>&1
 rm -f *.c
 rm -f *.h
 rm -f Makefile
+
 
 #Install end

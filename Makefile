@@ -1,7 +1,7 @@
-# Copyright 2009 SYSTEMBASE all right reserved 
-# for kernel 2.6
+# Copyright 2009-2012 SYSTEMBASE all right reserved 
+# for kernel 2.6 & 3.0
 #
-ifeq "$(findstring 2.6, $(shell uname -a))" "2.6"
+ifneq "$(findstring 2.4, $(shell uname -a))" "2.4"
 DRIVERNAME := golden_tulip
 all:	modules 
 

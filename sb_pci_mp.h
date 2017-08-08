@@ -23,7 +23,6 @@
 #define MOD_DEC_USE_COUNT
 #endif
 
-
 #include <linux/autoconf.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
@@ -47,7 +46,11 @@
 #include <linux/serial_reg.h>
 #include <linux/ioport.h>
 #include <linux/mm.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
+#include <linux/sched.h>
+#else 
 #include <linux/smp_lock.h>
+#endif
 
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -84,30 +87,60 @@
 #include "sb_mp_register.h"
 #include "sb_ser_core.h"
 
-#define DRIVER_VERSION  "1.0"
-#define DRIVER_DATE     "2009/12/52"
+#define DRIVER_VERSION  "1.1"
+#define DRIVER_DATE     "2012/01/05"
 #define DRIVER_AUTHOR  "SYSTEMBASE<tech@sysbas.com>"
 #define DRIVER_DESC  "SystemBase PCI/PCIe Multiport Core"
 
 #define SB_TTY_MP_MAJOR			54
 #define PCI_VENDOR_ID_MULTIPORT		0x14A1
+
 #define PCI_DEVICE_ID_MP1		0x4d01
 #define PCI_DEVICE_ID_MP2		0x4d02
 #define PCI_DEVICE_ID_MP4		0x4d04
+#define PCI_DEVICE_ID_MP4A		0x4d54
+#define PCI_DEVICE_ID_MP6		0x4d06
+#define PCI_DEVICE_ID_MP6A		0x4d56
 #define PCI_DEVICE_ID_MP8		0x4d08
 #define PCI_DEVICE_ID_MP32		0x4d32
+/* Parallel port */
+#define PCI_DEVICE_ID_MP1P		0x4301
+#define PCI_DEVICE_ID_MP2S1P		0x4303
+
 #define PCIE_DEVICE_ID_MP1		0x4501
 #define PCIE_DEVICE_ID_MP2		0x4502
 #define PCIE_DEVICE_ID_MP4		0x4504
 #define PCIE_DEVICE_ID_MP8		0x4508
 #define PCIE_DEVICE_ID_MP32		0x4532
 
+#define PCIE_DEVICE_ID_MP1E		0x4e01
+#define PCIE_DEVICE_ID_MP2E		0x4e02
+#define PCIE_DEVICE_ID_MP2B		0x4b02
+#define PCIE_DEVICE_ID_MP4B		0x4b04
+#define PCIE_DEVICE_ID_MP8B		0x4b08
+
+#define PCI_DEVICE_ID_GT_MP4		0x0004
+#define PCI_DEVICE_ID_GT_MP4A		0x0054
+#define PCI_DEVICE_ID_GT_MP6		0x0006
+#define PCI_DEVICE_ID_GT_MP6A		0x0056
+#define PCI_DEVICE_ID_GT_MP8		0x0008
+#define PCI_DEVICE_ID_GT_MP32		0x0032
+
+#define PCIE_DEVICE_ID_GT_MP1		0x1501
+#define PCIE_DEVICE_ID_GT_MP2		0x1502
+#define PCIE_DEVICE_ID_GT_MP4		0x1504
+#define PCIE_DEVICE_ID_GT_MP8		0x1508
+#define PCIE_DEVICE_ID_GT_MP32		0x1532
+
+#define PCI_DEVICE_ID_MP4M		0x4604  //modem
+
 #define MAX_MP_DEV  8
 #define BD_MAX_PORT 32 	/* Max serial port in one board */
 #define MAX_MP_PORT 256 /* Max serial port in one PC */
 
+#define PORT_16C105XA	3
 #define PORT_16C105X	2
-#define PORT_16C55X	1
+#define PORT_16C55X		1
 
 #define ENABLE		1
 #define DISABLE		0
@@ -130,6 +163,20 @@
 #define TIOCGGETREV		0x546B
 #define TIOCGGETNRPORTS		0x546C
 #define TIOCGGETPORTTYPE	0x546D
+#define GETDEEPFIFO		0x54AA
+#define SETDEEPFIFO		0x54AB
+#define SETFCR			0x54BA
+#define SETTTR			0x54B1
+#define SETRTR			0x54B2
+#define GETTTR			0x54B3
+#define GETRTR			0x54B4
+
+/* multi-drop mode related ioctl commands */
+#define TIOCSMULTIDROP		0x5470
+#define TIOCSMDADDR   		0x5471
+#define TIOCGMDADDR   		0x5472
+#define TIOCSENDADDR		0x5473
+
 
 /* serial interface */
 #define RS232		1 
@@ -221,16 +268,45 @@ typedef struct mppcibrd {
 } mppcibrd_t;
 
 static mppcibrd_t mp_pciboards[] = {
+
         { "Multi-1 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP1} ,
         { "Multi-2 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP2} ,
         { "Multi-4 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP4} ,
+        { "Multi-4 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP4A} ,
+        { "Multi-6 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP6} ,
+        { "Multi-6 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP6A} ,
         { "Multi-8 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP8} ,
         { "Multi-32 PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP32} ,
+
+        { "Multi-1P PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP1P} ,
+        { "Multi-2S1P PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP2S1P} ,
+
+        { "Multi-4(GT) PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_GT_MP4} ,
+        { "Multi-4(GT) PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_GT_MP4A} ,
+        { "Multi-6(GT) PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_GT_MP6} ,
+        { "Multi-6(GT) PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_GT_MP6A} ,
+        { "Multi-8(GT) PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_GT_MP8} ,
+        { "Multi-32(GT) PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_GT_MP32} ,
+
         { "Multi-1 PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP1} ,
         { "Multi-2 PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP2} ,
         { "Multi-4 PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP4} ,
         { "Multi-8 PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP8} ,
         { "Multi-32 PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP32} ,
+
+        { "Multi-1 PCIe E", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP1E} ,
+        { "Multi-2 PCIe E", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP2E} ,
+        { "Multi-2 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP2B} ,
+        { "Multi-4 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP4B} ,
+        { "Multi-8 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP8B} ,
+
+        { "Multi-1(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP1} ,
+        { "Multi-2(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP2} ,
+        { "Multi-4(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP4} ,
+        { "Multi-8(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP8} ,
+        { "Multi-32(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP32} ,
+
+        { "Multi-4M PCI", PCI_VENDOR_ID_MULTIPORT , PCI_DEVICE_ID_MP4M} ,
 };
 
 struct mp_port {
@@ -266,6 +342,7 @@ static const struct serial_uart_config uart_config[] = {
         { "unknown",    1,  0 },
         { "16550A", 16, UART_CLEAR_FIFO | UART_USE_FIFO },
         { "SB16C1050",    128,    UART_CLEAR_FIFO | UART_USE_FIFO | UART_STARTECH },
+        { "SB16C1050A",    128,    UART_CLEAR_FIFO | UART_USE_FIFO | UART_STARTECH },
 };
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)) 
 static int                                      sb_refcount;

@@ -20,22 +20,31 @@
 #include <dirent.h>
 #include <sys/ioctl.h>
 #include <linux/serial.h>
+#include <linux/fd.h>
 #include <poll.h>
 #include <string.h>
+
+/* multi-drop mode related ioctl commands */
+#define TIOCSMULTIDROP      0x5470
+#define TIOCSMDADDR         0x5471
+#define TIOCGMDADDR         0x5472
+#define TIOCSENDADDR        0x5473
+
+#define MDMODE_ENABLE   0x2
 
 int serial_fd;
 int baudrate;
 int delay;
 int OpenSerial(char * port_name);
-void SerialWrite(int fd, char *buff, int len);
+void SerialWriteData(int fd, char *buff, int len);
+void SerialWriteWithAddress(int fd, char *buff, int len, int addr);
 int ReadSerial(int fd, char * buff);
 //===============================================================================	
 void usage(void)
 {
-	printf("Usage: ./sb_test [Port Name] [Baudrate] [TestMode]\n");
+	printf("Usage: ./sb_test [Port Name] [Baudrate]\n");
 	printf("Port Name : /dev/ttyMP0 ~ /dev/ttyMP32\n");
 	printf("Baudrate  : 9600, 19200, ... \n");
-	printf("TestMode  : 0(Loopback) 1(Send) 2(Recv) \n");
 }
 
 int main(int argc, char ** argv)
@@ -43,7 +52,10 @@ int main(int argc, char ** argv)
 	char send_buff[128]="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 	int cnt = 0, len, i, mode = 0;
 	char recv_buff[512];
-	int base_delay = 100;
+	int base_delay = 200;
+	int valid_addr = 0x23;
+	int invalid_addr = 0x24;
+	int addr;
 
 	if (argc != 4 )
 	{
@@ -74,15 +86,11 @@ int main(int argc, char ** argv)
 	switch(mode)
 	{
 		case 0:
-			printf("Loopback Test Mode ! \n");
+			printf("Send test Mode ! \n");
 			sleep(1);
 			break;
 		case 1:
-			printf("Send Test Mode ! \n");
-			sleep(1);
-			break;
-		case 2:
-			printf("Receive Test Mode ! \n");
+			printf("Recv Test Mode ! \n");
 			sleep(1);
 			break;
 		default:
@@ -90,38 +98,71 @@ int main(int argc, char ** argv)
 			return 0;
 	}
 	
-	
 	if ((serial_fd = OpenSerial(argv[1]))<0)
 	{
 		printf("Serial Open Error: %s\n", argv[1]);
 		return 0;
 	}
+
+	ioctl(serial_fd, TIOCSMDADDR, valid_addr);
 	
+
+	addr = valid_addr;
+	ioctl(serial_fd, TIOCSENDADDR, addr);
 
 	while(1)
 	{
+			if (mode == 0) 
+			{
 		if (++cnt>52)
+		{
 			cnt = 1;
-
-		if (mode !=2)
-		{
-			SerialWrite(serial_fd,send_buff,cnt);
-			SerialWrite(serial_fd,"\n",1);
+#if 0
+			if (addr == valid_addr)
+			{
+				addr = invalid_addr;
+				printf("send data with invalid address\n");
+			}
+			else
+			{
+				addr = valid_addr;
+				printf("send data with valid address\n");
+			}
+			ioctl(serial_fd, TIOCSENDADDR, addr);
+#endif
 		}
+#if 1
+			if (addr == valid_addr)
+			{
+				addr = invalid_addr;
+				printf("?\n");
+			}
+			else
+			{
+				addr = valid_addr;
+				printf("!\n");
+			}
+			ioctl(serial_fd, TIOCSENDADDR, addr);
+//			ioctl(serial_fd, TIOCSENDADDR, 0x23);
+#endif
+
+		SerialWriteWithAddress(serial_fd, send_buff, cnt, addr);
+		SerialWriteWithAddress(serial_fd, "\n", 1, addr);
 		usleep(delay);
+			}
 
-		if (mode !=1)
-		{
-			do {
-				len=ReadSerial(serial_fd, recv_buff);
-				if (len>0)
-				{
-					int i;
-					for(i=0;i<len;i++)
-						printf("%c",recv_buff[i]);
-				}
-			}while(len>0);
-		}
+			if (mode == 1)
+			{
+		do {
+			len=ReadSerial(serial_fd, recv_buff);
+			if (len>0)
+			{
+				int i;
+				for(i=0;i<len;i++)
+					printf("%c",recv_buff[i]);
+			}
+		}while(len>0);
+			}
 
 	}
 	return 0;
@@ -146,12 +187,13 @@ int OpenSerial(char * port_name)
 	newtio.c_lflag &= ~(ICANON|ECHO|ECHOE|ISIG);
 	tcflush(fd, TCIFLUSH);
 	tcsetattr(fd, TCSANOW, &newtio);
+	ioctl(fd, TIOCSMULTIDROP, MDMODE_ENABLE);
 
 	return fd;
 }	
 
 
-void SerialWrite(int fd, char *buff, int len)
+void SerialWriteData(int fd, char *buff, int len)
 {
 	char *p;
 	int ret;
@@ -177,24 +219,67 @@ void SerialWrite(int fd, char *buff, int len)
 	return;
 }
 
+void SerialWriteWithAddress(int fd, char *buff, int len, int addr)
+{
+	char *p;
+	int ret;
+	int cnt=0;
+
+	if (len <=0) return;
+
+//	ioctl(fd, TIOCSENDADDR, addr);
+
+	p=buff;
+	do {
+		ret = write(fd, p, len);
+		if(ret>0)
+		{
+			len -= ret;
+			p += ret;
+		}
+		if (len>0)
+		{
+			if (++cnt>20) break;;
+			usleep(1);
+		}
+	}while(len);
+
+	return;
+}
+
 int ReadSerial(int fd, char * buff)
 {
 	int len, tot = 0;
 	char *p;
 	int buffsize = 256;
+	fd_set readfds;
+	int state;
+	struct timeval tv;
+
 
 	p=buff;
-	len=read(fd, p, buffsize);
-	if (len <= 0) return 0;
 
-	do {
-		p += len;
-		tot += len;
-		if (tot >= 500) break;
-		usleep(1);
-		len = read(fd, p, buffsize - tot);
-	}while (len>0);
+	while(1) 
+	{
+		FD_ZERO(&readfds);
+		FD_SET(fd, &readfds);
+
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+
+		state = select(fd + 1, &readfds, NULL, NULL, &tv);
+		if (state <= 0 ) break;
+
+		if (FD_ISSET(fd, &readfds))
+		{
+			usleep(1);
+			len = read(fd, p, buffsize - tot);
+			if (len <= 0) break;
+			p += len;
+			tot += len;
+			if (tot >= 256) break;
+		}
+	}
 
 	return tot;
 }
-

@@ -1,4 +1,4 @@
-
+#include <linux/wait.h>
 
 #define UART_CONFIG_TYPE	(1 << 0)
 #define UART_CONFIG_IRQ		(1 << 1)
@@ -149,6 +149,12 @@ struct sb_uart_port {
 	unsigned char		unused[3];
 };
 
+#define mdmode			unused[2]
+#define MDMODE_ADDR		0x1
+#define MDMODE_ENABLE	0x2
+#define MDMODE_AUTO		0x4
+#define MDMODE_ADDRSEND	0x8
+
 struct sb_uart_state {
 	unsigned int		close_delay;		/* msec */
 	unsigned int		closing_wait;		/* msec */
@@ -172,7 +178,7 @@ struct sb_uart_info {
 	struct tty_struct	*tty;
 	struct circ_buf		xmit;
 	uif_t			flags;
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)) 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)) 
         unsigned char                   *tmpbuf;
         struct semaphore                tmpbuf_sem;
 #endif

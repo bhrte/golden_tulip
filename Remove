@@ -9,7 +9,16 @@ echo -e "\nRemove Multiports PCI/PCIe Driver..!!"
 make clean > /dev/null 2>&1;
 make -C ./Util/ clean > /dev/null 2>&1;
 
-rmmod golden_tulip > /dev/null 2>&1
+modprobe -r golden_tulip > /dev/null 2>&1
+
+#########   Modify by jhyou ###########
+rm -f /lib/modules/$(uname -r)/kernel/drivers/char/$DRIVERNAME.ko
+rm -f /lib/modules/$(uname -r)/misc/$DRIVERNAME.ko
+rm -f /lib/modules/$(uname -r)/kernel/drivers/char/$DRIVERNAME.o
+rm -f /lib/modules/$(uname -r)/misc/$DRIVERNAME.o
+depmod -a
+#######################################
+
 
 #echo " "
 #echo -n "remove node(/etc/inittab) ....."
@@ -36,11 +45,21 @@ then
         RC=/etc/rc.local
         RCORG=/etc/rc.local.org
 fi
+if [ -f "/etc/init.d/rc.local" ]
+then
+        RC=/etc/init.d/rc.local
+        RCORG=/etc/init.d/rc.local.org
+fi
 
 cp  $RC $RCORG
-grep -v 'golden_tulip' < $RCORG > $RC
+grep -v 'modprobe golden_tulip' < $RCORG > $RC
 rm -f $RCORG
 
+cp  $RC $RCORG
+grep -v '/etc/sb_mp' < $RCORG > $RC
+rm -f $RCORG
+
+rm -f /etc/sb_mp
 rm -f sb_config sb_config.o
 echo -e "done"
 

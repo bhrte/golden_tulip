@@ -1,5 +1,11 @@
-
 #include "sb_pci_mp.h"
+#include <linux/parport.h>
+
+extern struct parport *parport_pc_probe_port(unsigned long base_lo,
+		unsigned long base_hi,
+		int irq, int dma,
+		struct device *dev,
+		int irqflags);
 
 static struct mp_device_t mp_devs[MAX_MP_DEV];
 static int mp_nrpcibrds = sizeof(mp_pciboards)/sizeof(mppcibrd_t);
@@ -13,7 +19,10 @@ static _INLINE_ void serial_out(struct mp_port *mtpt, int offset, int value);
 static _INLINE_ unsigned int read_option_register(struct mp_port *mtpt, int offset);
 static int sb1054_get_register(struct sb_uart_port * port, int page, int reg);
 static int sb1054_set_register(struct sb_uart_port * port, int page, int reg, int value);
+static void SendATCommand(struct mp_port * mtpt);
 static int set_deep_fifo(struct sb_uart_port * port, int status);
+static int get_deep_fifo(struct sb_uart_port * port);
+static int get_device_type(int arg);
 static int set_auto_rts(struct sb_uart_port *port, int status);
 static void mp_stop(struct tty_struct *tty);
 static void __mp_start(struct tty_struct *tty);
@@ -48,9 +57,14 @@ static int mp_get_info(struct sb_uart_state *state, struct serial_struct *retinf
 static int mp_set_info(struct sb_uart_state *state, struct serial_struct *newinfo);
 static int mp_get_lsr_info(struct sb_uart_state *state, unsigned int *value);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,10))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 static int mp_tiocmget(struct tty_struct *tty, struct file *file);
 static int mp_tiocmset(struct tty_struct *tty, struct file *file, unsigned int set, unsigned int clear);
+#else
+static int mp_tiocmget(struct tty_struct *tty);
+static int mp_tiocmset(struct tty_struct *tty, unsigned int set, unsigned int clear);
+#endif
 #else
 static int sb_get_modem_info(struct sb_uart_state *, unsigned int *);
 static int sb_set_modem_info(struct sb_uart_state *, unsigned int, unsigned int *);
@@ -63,7 +77,11 @@ static void mp_break_ctl(struct tty_struct *tty, int break_state);
 static int mp_do_autoconfig(struct sb_uart_state *state);
 static int mp_wait_modem_status(struct sb_uart_state *state, unsigned long arg);
 static int mp_get_count(struct sb_uart_state *state, struct serial_icounter_struct *icnt);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
+static int mp_ioctl(struct tty_struct *tty, unsigned int cmd, unsigned long arg);
+#else
 static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd, unsigned long arg);
+#endif
 static void mp_set_termios(struct tty_struct *tty, struct MP_TERMIOS *old_termios);
 static void mp_close(struct tty_struct *tty, struct file *filp);
 static void mp_wait_until_sent(struct tty_struct *tty, int timeout);
@@ -74,7 +92,7 @@ static struct sb_uart_state *uart_get(struct uart_driver *drv, int line);
 static int mp_open(struct tty_struct *tty, struct file *filp);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
 static const char *mp_type(struct sb_uart_port *port);
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
 #ifdef CONFIG_PROC_FS
 static int mp_line_info(char *buf, struct uart_driver *drv, int i);
 static int mp_read_proc(char *page, char **start, off_t off, int count, int *eof, void *data);
@@ -129,6 +147,20 @@ static void __init multi_init_ports(void);
 static void __init multi_register_ports(struct uart_driver *drv);
 static int init_mp_dev(struct pci_dev *pcidev, mppcibrd_t brd);
 
+static int deep[256];
+static int deep_count;
+static int fcr_arr[256];
+static int fcr_count;
+static int ttr[256];
+static int ttr_count;
+static int rtr[256];
+static int rtr_count;
+
+module_param_array(deep,int,&deep_count,0);
+module_param_array(fcr_arr,int,&fcr_count,0);
+module_param_array(ttr,int,&ttr_count,0);
+module_param_array(rtr,int,&rtr_count,0);
+
 static _INLINE_ unsigned int serial_in(struct mp_port *mtpt, int offset)
 {
 	return inb(mtpt->port.iobase + offset);
@@ -144,6 +176,43 @@ static _INLINE_ unsigned int read_option_register(struct mp_port *mtpt, int offs
 	return inb(mtpt->option_base_addr + offset);
 }
 
+static int sb1053a_get_interface(struct mp_port *mtpt, int port_num)
+{
+	unsigned long option_base_addr = mtpt->option_base_addr;
+	unsigned int  interface = 0;
+
+	switch (port_num)
+	{
+		case 0:
+		case 1:
+			/* set GPO[1:0] = 00 */
+			outb(0x00, option_base_addr + MP_OPTR_GPODR);
+			break;
+		case 2:
+		case 3:
+			/* set GPO[1:0] = 01 */
+			outb(0x01, option_base_addr + MP_OPTR_GPODR);
+			break;
+		case 4:
+		case 5:
+			/* set GPO[1:0] = 10 */
+			outb(0x02, option_base_addr + MP_OPTR_GPODR);
+			break;
+		default:
+			break;
+	}
+
+	port_num &= 0x1;
+
+	/* get interface */
+	interface = inb(option_base_addr + MP_OPTR_IIR0 + port_num);
+
+	/* set GPO[1:0] = 11 */
+	outb(0x03, option_base_addr + MP_OPTR_GPODR);
+
+	return (interface);
+}
+		
 static int sb1054_get_register(struct sb_uart_port * port, int page, int reg)
 {
 	int ret = 0;
@@ -226,7 +295,7 @@ static int sb1054_set_register(struct sb_uart_port * port, int page, int reg, in
 			SB105X_PUT_REG(port,reg,value);
 
 			SB105X_PUT_LCR(port, lcr);
-			ret = 0;
+			ret = 1;
 			break;
 		case 2:
 			mcr = SB105X_GET_MCR(port);
@@ -235,7 +304,7 @@ static int sb1054_set_register(struct sb_uart_port * port, int page, int reg, in
 			SB105X_PUT_REG(port,reg,value);
 
 			SB105X_PUT_MCR(port, mcr);
-			ret = 0;
+			ret = 1;
 			break;
 		case 3:
 			lcr = SB105X_GET_LCR(port);
@@ -245,7 +314,7 @@ static int sb1054_set_register(struct sb_uart_port * port, int page, int reg, in
 			SB105X_PUT_REG(port,reg,value);
 
 			SB105X_PUT_LCR(port, lcr);
-			ret = 0;
+			ret = 1;
 			break;
 		case 4:
 			lcr = SB105X_GET_LCR(port);
@@ -255,7 +324,7 @@ static int sb1054_set_register(struct sb_uart_port * port, int page, int reg, in
 			SB105X_PUT_REG(port,reg,value);
 
 			SB105X_PUT_LCR(port, lcr);
-			ret = 0;
+			ret = 1;
 			break;
 		default:
 			printk(" error invalid page number \n");
@@ -264,6 +333,74 @@ static int sb1054_set_register(struct sb_uart_port * port, int page, int reg, in
 
 	return ret;
 }
+
+static int set_multidrop_mode(struct sb_uart_port *port, unsigned int mode)
+{
+	int mdr = SB105XA_MDR_NPS;
+
+	if (mode & MDMODE_ENABLE)
+	{
+		mdr |= SB105XA_MDR_MDE;
+	}
+
+	if (1) //(mode & MDMODE_AUTO)
+	{
+		int efr = 0;
+		mdr |= SB105XA_MDR_AME;
+		efr = sb1054_get_register(port, PAGE_3, SB105X_EFR);
+		efr |= SB105X_EFR_SCD;
+		sb1054_set_register(port, PAGE_3, SB105X_EFR, efr);
+	}
+
+	sb1054_set_register(port, PAGE_1, SB105XA_MDR, mdr);
+	port->mdmode &= ~0x6;
+	port->mdmode |= mode;
+	printk("[%d] multidrop init: %x\n", port->line, port->mdmode);
+
+	return 0;
+}
+
+static int get_multidrop_addr(struct sb_uart_port *port)
+{
+	return sb1054_get_register(port, PAGE_3, SB105X_XOFF2);
+}
+
+static int set_multidrop_addr(struct sb_uart_port *port, unsigned int addr)
+{
+	sb1054_set_register(port, PAGE_3, SB105X_XOFF2, addr);
+
+	return 0;
+}
+
+static void SendATCommand(struct mp_port * mtpt)
+{
+	//		      a    t	cr   lf
+	unsigned char ch[] = {0x61,0x74,0x0d,0x0a,0x0};
+	unsigned char lineControl;
+	unsigned char i=0,j=0;
+	unsigned char Divisor = 0xc;
+
+	lineControl = serial_inp(mtpt,UART_LCR);
+	serial_outp(mtpt,UART_LCR,(lineControl | UART_LCR_DLAB));
+	serial_outp(mtpt,UART_DLL,(Divisor & 0xff));
+	serial_outp(mtpt,UART_DLM,(Divisor & 0xff00)>>8); //baudrate is 4800
+
+
+	serial_outp(mtpt,UART_LCR,lineControl);	
+	serial_outp(mtpt,UART_LCR,0x03); // N-8-1
+	serial_outp(mtpt,UART_FCR,7); 
+	serial_outp(mtpt,UART_MCR,0x3);
+	while(ch[i]){
+		while((serial_inp(mtpt,UART_LSR) & 0x60) !=0x60){
+			;
+			//if(j++ > 100)
+			//break;
+		}
+		serial_outp(mtpt,0,ch[i++]);
+	}
+
+
+}// end of SendATCommand()
 
 static int set_deep_fifo(struct sb_uart_port * port, int status)
 {
@@ -278,32 +415,94 @@ static int set_deep_fifo(struct sb_uart_port * port, int status)
 	{
 		afr_status &= ~SB105X_AFR_AFEN;
 	}
-	
+		
 	sb1054_set_register(port,PAGE_4,SB105X_AFR,afr_status);
-	
+	sb1054_set_register(port,PAGE_4,SB105X_TTR,ttr[port->line]); 
+	sb1054_set_register(port,PAGE_4,SB105X_RTR,rtr[port->line]); 
 	afr_status = sb1054_get_register(port, PAGE_4, SB105X_AFR);
-	
+		
+	return afr_status;
+}
+
+static int get_device_type(int arg)
+{
+	int ret;
+        ret = inb(mp_devs[arg].option_reg_addr+MP_OPTR_DIR0);
+        ret = (ret & 0xf0) >> 4;
+        switch (ret)
+        {
+               case DIR_UART_16C550:
+                    return PORT_16C55X;
+               case DIR_UART_16C1050:
+                    return PORT_16C105X;
+               case DIR_UART_16C1050A:
+               /*
+               if (mtpt->port.line < 2)
+               {
+                    return PORT_16C105XA;
+               }
+               else
+               {
+                   if (mtpt->device->device_id & 0x50)
+                   {
+                       return PORT_16C55X;
+                   }
+                   else
+                   {
+                       return PORT_16C105X;
+                   }
+               }*/
+               return PORT_16C105XA;
+               default:
+                    return PORT_UNKNOWN;
+        }
+
+}
+static int get_deep_fifo(struct sb_uart_port * port)
+{
+	int afr_status = 0;
+	afr_status = sb1054_get_register(port, PAGE_4, SB105X_AFR);
 	return afr_status;
 }
 
 static int set_auto_rts(struct sb_uart_port *port, int status)
 {
-	int efr_status = 0;
-	efr_status = sb1054_get_register(port, PAGE_3, SB105X_EFR);
+	int atr_status = 0;
 
-	if(status == ENABLE)
-	{
-		efr_status |= SB105X_EFR_ARTS;
-	}
-	else
-	{
-		efr_status &= ~SB105X_EFR_ARTS;
-	}
-	sb1054_set_register(port,PAGE_3,SB105X_EFR,efr_status);
-	
+#if 0
+	int efr_status = 0;
+
 	efr_status = sb1054_get_register(port, PAGE_3, SB105X_EFR);
-	
-	return efr_status;
+	if(status == ENABLE)
+		efr_status |= SB105X_EFR_ARTS;
+	else
+		efr_status &= ~SB105X_EFR_ARTS;
+	sb1054_set_register(port,PAGE_3,SB105X_EFR,efr_status);
+	efr_status = sb1054_get_register(port, PAGE_3, SB105X_EFR);
+#endif
+		
+//ATR
+	atr_status = sb1054_get_register(port, PAGE_3, SB105X_ATR);
+	switch(status)
+	{
+		case RS422PTP:
+			atr_status = (SB105X_ATR_TPS) | (SB105X_ATR_A80);
+			break;
+		case RS422MD:
+			atr_status = (SB105X_ATR_TPS) | (SB105X_ATR_TCMS) | (SB105X_ATR_A80);
+			break;
+		case RS485NE:
+			atr_status = (SB105X_ATR_RCMS) | (SB105X_ATR_TPS) | (SB105X_ATR_TCMS) | (SB105X_ATR_A80);
+			break;
+		case RS485ECHO:
+			atr_status = (SB105X_ATR_TPS) | (SB105X_ATR_TCMS) | (SB105X_ATR_A80);
+			break;
+	}
+
+	sb1054_set_register(port,PAGE_3,SB105X_ATR,atr_status);
+	atr_status = sb1054_get_register(port, PAGE_3, SB105X_ATR);
+
+	return atr_status;
 }
 
 static void mp_stop(struct tty_struct *tty)
@@ -337,6 +536,7 @@ static void mp_tasklet_action(unsigned long data)
 	struct sb_uart_state *state = (struct sb_uart_state *)data;
 	struct tty_struct *tty;
 
+	printk("tasklet is called!\n");
 	tty = state->info->tty;
 #if (LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,9))
 	if (tty) {
@@ -386,7 +586,7 @@ static int mp_startup(struct sb_uart_state *state, int init_hw)
 			return -ENOMEM;
 
 		info->xmit.buf = (unsigned char *) page;
-		
+			
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10))
 		info->tmpbuf = info->xmit.buf + UART_XMIT_SIZE;
 		init_MUTEX(&info->tmpbuf_sem);
@@ -543,7 +743,7 @@ static int mp_write(struct tty_struct *tty, const unsigned char * buf, int count
 
 	if (!circ->buf)
 		return 0;
-	
+		
 	while (1) {
 		c = CIRC_SPACE_TO_END(circ->head, circ->tail, UART_XMIT_SIZE);
 		if (count < c)
@@ -551,20 +751,20 @@ static int mp_write(struct tty_struct *tty, const unsigned char * buf, int count
 		if (c <= 0)
 			break;
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,9))                
-        memcpy(circ->buf + circ->head, buf, c);
+	memcpy(circ->buf + circ->head, buf, c);
 #else
-        if (from_user)
-        {
-        	if (copy_from_user((circ->buf + circ->head), buf, c) == c)
-            {
-            	ret = -EFAULT;
-                break;
-            }
-        }
-        else
-        {
-        	memcpy(circ->buf + circ->head, buf, c);
-        }
+	if (from_user)
+	{
+		if (copy_from_user((circ->buf + circ->head), buf, c) == c)
+		{
+		ret = -EFAULT;
+		break;
+		}
+	}
+	else
+	{
+		memcpy(circ->buf + circ->head, buf, c);
+	}
 #endif
 
 		circ->head = (circ->head + c) & (UART_XMIT_SIZE - 1);
@@ -850,13 +1050,14 @@ static int mp_get_lsr_info(struct sb_uart_state *state, unsigned int *value)
 
 	if (port->x_char ||
 			((uart_circ_chars_pending(&state->info->xmit) > 0) &&
-			 !state->info->tty->stopped && !state->info->tty->hw_stopped))
+				!state->info->tty->stopped && !state->info->tty->hw_stopped))
 		result &= ~TIOCSER_TEMT;
 
 	return put_user(result, value);
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,10))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 static int mp_tiocmget(struct tty_struct *tty, struct file *file)
 {
 	struct sb_uart_state *state = tty->driver_data;
@@ -893,145 +1094,177 @@ static int mp_tiocmset(struct tty_struct *tty, struct file *file, unsigned int s
 	return ret;
 }
 #else
+static int mp_tiocmget(struct tty_struct *tty)
+{
+	struct sb_uart_state *state = tty->driver_data;
+	struct sb_uart_port *port = state->port;
+	int result = -EIO;
+
+	MP_STATE_LOCK(state);
+	if (!(tty->flags & (1 << TTY_IO_ERROR))) {
+		result = port->mctrl;
+		spin_lock_irq(&port->lock);
+		result |= port->ops->get_mctrl(port);
+		spin_unlock_irq(&port->lock);
+	}
+	MP_STATE_UNLOCK(state);
+	return result;
+}
+
+static int mp_tiocmset(struct tty_struct *tty, unsigned int set, unsigned int clear)
+{
+	struct sb_uart_state *state = tty->driver_data;
+	struct sb_uart_port *port = state->port;
+	int ret = -EIO;
+
+
+	MP_STATE_LOCK(state);
+	if (!(tty->flags & (1 << TTY_IO_ERROR))) {
+		mp_update_mctrl(port, set, clear);
+		ret = 0;
+	}
+	MP_STATE_UNLOCK(state);
+
+	return ret;
+}
+#endif
+#else
 static int sb_get_modem_info(struct sb_uart_state *state, unsigned int *value)
 {
-    struct sb_uart_port *port = NULL;
-    int line;
-    unsigned int result;
+	struct sb_uart_port *port = NULL;
+	int line;
+	unsigned int result;
 
-    if (!state)
-    {
-        return -EIO;
-    }
+	if (!state)
+	{
+	return -EIO;
+	}
 
-    port = state->port;
+	port = state->port;
 
-    if (!port)
-    {
-        return -EIO;
-    }
+	if (!port)
+	{
+	return -EIO;
+	}
 
-    line = port->line;
+	line = port->line;
 
-    if (line >= MAX_MP_PORT)
-    {
-        return -EIO;
-    }
+	if (line >= MAX_MP_PORT)
+	{
+	return -EIO;
+	}
 
-    result = port->mctrl;
-    result |= multi_get_mctrl(port);
+	result = port->mctrl;
+	result |= multi_get_mctrl(port);
 
-        put_user(result, (unsigned long *)value);
-        return 0;
+	put_user(result, (unsigned long *)value);
+	return 0;
 }
 static int sb_set_modem_info(struct sb_uart_state *state, unsigned int cmd, unsigned int *value)
 {
-    struct sb_uart_port *port = NULL;
-    int line;
-    unsigned int set = 0;
-    unsigned int clr = 0;
-        unsigned int arg;
+	struct sb_uart_port *port = NULL;
+	int line;
+	unsigned int set = 0;
+	unsigned int clr = 0;
+	unsigned int arg;
 
-    if (!state)
-    {
-        return -EIO;
-    }
+	if (!state){
+		return -EIO;
+	}
 
-    port = state->port;
+	port = state->port;
 
-    if (!port)
-    {
-        return -EIO;
-    }
+	if (!port){
+		return -EIO;
+	}
 
-    line = port->line;
+	line = port->line;
 
-    if (line >= MAX_MP_PORT)
-    {
-        return -EIO;
-    }
+	if (line >= MAX_MP_PORT){
+		return -EIO;
+	}
 
-        get_user(arg,(unsigned long *)value);
+	get_user(arg,(unsigned long *)value);
 
-        switch (cmd)
-        {
-                case TIOCMBIS:
-        {
-            if (arg & TIOCM_RTS)
-            {
-                            set |= TIOCM_RTS;
-            }
+	switch (cmd)
+	{
+		case TIOCMBIS:
+		{
+		if (arg & TIOCM_RTS)
+		{
+				set |= TIOCM_RTS;
+		}
 
-                if (arg & TIOCM_DTR)
-            {
-                        set |= TIOCM_DTR;
-            }
+		if (arg & TIOCM_DTR)
+		{
+			set |= TIOCM_DTR;
+		}
 
-            if (arg & TIOCM_LOOP)
-            {
-                set |= TIOCM_LOOP;
-            }
-                break;
-        }
+		if (arg & TIOCM_LOOP)
+		{
+		set |= TIOCM_LOOP;
+		}
+		break;
+	}
 
-                case TIOCMBIC:
-        {
-                if (arg & TIOCM_RTS)
-            {
-                        clr |= TIOCM_RTS;
-            }
+		case TIOCMBIC:
+	{
+		if (arg & TIOCM_RTS)
+		{
+			clr |= TIOCM_RTS;
+		}
 
-                if (arg & TIOCM_DTR)
-            {
-                            clr |= TIOCM_DTR;
-            }
+		if (arg & TIOCM_DTR)
+		{
+				clr |= TIOCM_DTR;
+		}
 
-            if (arg & TIOCM_LOOP)
-            {
-                clr |= TIOCM_LOOP;
-            }
-                break;
-        }
+		if (arg & TIOCM_LOOP)
+		{
+		clr |= TIOCM_LOOP;
+		}
+		break;
+	}
 
-                case TIOCMSET:
-        {
-                if (arg & TIOCM_RTS)
-            {
-                        set |= TIOCM_RTS;
-            }
-            else
-            {
-                clr |= TIOCM_RTS;
-            }
+		case TIOCMSET:
+	{
+		if (arg & TIOCM_RTS)
+		{
+			set |= TIOCM_RTS;
+		}
+		else
+		{
+		clr |= TIOCM_RTS;
+		}
 
-                if (arg & TIOCM_DTR)
-            {
-                            set |= TIOCM_DTR;
-            }
-            else
-            {
-                clr |= TIOCM_DTR;
-            }
+		if (arg & TIOCM_DTR)
+		{
+				set |= TIOCM_DTR;
+		}
+		else
+		{
+		clr |= TIOCM_DTR;
+		}
 
-            if (arg & TIOCM_LOOP)
-            {
-                set |= TIOCM_LOOP;
-            }
-            else
-            {
-                clr |= TIOCM_LOOP;
-            }
-                break;
-        }
+		if (arg & TIOCM_LOOP)
+		{
+		set |= TIOCM_LOOP;
+		}
+		else
+		{
+		clr |= TIOCM_LOOP;
+		}
+		break;
+	}
 
-                default:
-        {
-            return -EINVAL;
-        }
-        }
+		default:
+	{
+		return -EINVAL;
+	}
+	}
 
-    mp_update_mctrl(port, set, clr);
-        return 0;
+	mp_update_mctrl(port, set, clr);
+	return 0;
 }
 #endif
 
@@ -1159,7 +1392,11 @@ static int mp_get_count(struct sb_uart_state *state, struct serial_icounter_stru
 	return copy_to_user(icnt, &icount, sizeof(icount)) ? -EFAULT : 0;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
+static int mp_ioctl(struct tty_struct *tty, unsigned int cmd, unsigned long arg)
+#else
 static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd, unsigned long arg)
+#endif
 {
 	struct sb_uart_state *state = tty->driver_data;
 	struct mp_port *info = (struct mp_port *)state->port;
@@ -1171,6 +1408,100 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 #endif
 
 	switch (cmd) {
+#if 0
+		case TIOCGMULTIDROP:
+			if (info->port.type == PORT_16C105XA)
+			{
+			//	return get_multidrop_mode(info);
+			}
+			ret = -ENOTSUPP;
+			break;
+#endif
+
+		case TIOCSMULTIDROP:
+			/* set multi-drop mode enable or disable, and default operation mode is H/W mode */
+			if (info->port.type == PORT_16C105XA)
+			{
+				//arg &= ~0x6;
+				//state->port->mdmode = 0;
+				return set_multidrop_mode((struct sb_uart_port *)info, (unsigned int)arg);
+			}
+			ret = -ENOTSUPP;
+			break;
+		case GETDEEPFIFO:
+			ret = get_deep_fifo(state->port);
+			return ret;
+		case SETDEEPFIFO:
+			ret = set_deep_fifo(state->port,arg);
+			deep[state->port->line] = arg;
+			return ret;
+		case SETTTR:
+			if (info->port.type == PORT_16C105X || info->port.type == PORT_16C105XA){
+				ret = sb1054_set_register(state->port,PAGE_4,SB105X_TTR,arg);
+				ttr[state->port->line] = arg;
+			}
+			return ret;
+		case SETRTR:
+			if (info->port.type == PORT_16C105X || info->port.type == PORT_16C105XA){
+				ret = sb1054_set_register(state->port,PAGE_4,SB105X_RTR,arg);
+				rtr[state->port->line] = arg;
+			}
+			return ret;
+		case GETTTR:
+			if (info->port.type == PORT_16C105X || info->port.type == PORT_16C105XA){
+				ret = sb1054_get_register(state->port,PAGE_4,SB105X_TTR);
+			}
+			return ret;
+		case GETRTR:
+			if (info->port.type == PORT_16C105X || info->port.type == PORT_16C105XA){
+				ret = sb1054_get_register(state->port,PAGE_4,SB105X_RTR);
+			}
+			return ret;
+
+		case SETFCR:
+			if (info->port.type == PORT_16C105X || info->port.type == PORT_16C105XA){
+				ret = sb1054_set_register(state->port,PAGE_1,SB105X_FCR,arg);
+			}
+			else{
+				serial_out(state->port,2,arg);
+			}
+
+			return ret;
+		case TIOCSMDADDR:
+			/* set multi-drop address */
+			if (info->port.type == PORT_16C105XA)
+			{
+				state->port->mdmode |= MDMODE_ADDR;
+				return set_multidrop_addr((struct sb_uart_port *)info, (unsigned int)arg);
+			}
+			ret = -ENOTSUPP;
+			break;
+
+		case TIOCGMDADDR:
+			/* set multi-drop address */
+			if ((info->port.type == PORT_16C105XA) && (state->port->mdmode & MDMODE_ADDR))
+			{
+				return get_multidrop_addr((struct sb_uart_port *)info);
+			}
+			ret = -ENOTSUPP;
+			break;
+
+		case TIOCSENDADDR:
+			/* send address in multi-drop mode */
+			if ((info->port.type == PORT_16C105XA) 
+					&& (state->port->mdmode & (MDMODE_ENABLE)))
+			{
+				if (mp_chars_in_buffer(tty) > 0)
+				{
+					tty_wait_until_sent(tty, 0);
+				}
+				//while ((serial_in(info, UART_LSR) & 0x60) != 0x60);
+				//while (sb1054_get_register(state->port, PAGE_2, SB105X_TFCR) != 0);
+				while ((serial_in(info, UART_LSR) & 0x60) != 0x60);
+				serial_out(info, UART_SCR, (int)arg);
+			}
+			break;
+
 		case TIOCGSERIAL:
 			ret = mp_get_info(state, (struct serial_struct *)arg);
 			break;
@@ -1183,35 +1514,35 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 			ret = mp_do_autoconfig(state);
 			break;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
-                case TIOCMGET:
-                {
-                        if (line < MAX_MP_PORT)
-                {
-                        ret = verify_area(VERIFY_WRITE, (void *)arg,    sizeof(unsigned int));
+		case TIOCMGET:
+		{
+			if (line < MAX_MP_PORT)
+		{
+			ret = verify_area(VERIFY_WRITE, (void *)arg,    sizeof(unsigned int));
 
-                        if (ret)
-                                {
-                                return ret;
-                }
+			if (ret)
+				{
+				return ret;
+		}
 
-                                status = sb_get_modem_info(state, (unsigned int *)arg);
-                        return status;
-                        }
-                        break;
-                }
+				status = sb_get_modem_info(state, (unsigned int *)arg);
+			return status;
+			}
+			break;
+		}
 
 
-                case TIOCMBIS:
-                case TIOCMBIC:
-                case TIOCMSET:
-                {
-                if (line < MAX_MP_PORT)
-                {
-                                status = sb_set_modem_info(state, cmd, (unsigned int *)arg);
-                        return status;
-                        }
-                        break;
-                }
+		case TIOCMBIS:
+		case TIOCMBIC:
+		case TIOCMSET:
+		{
+		if (line < MAX_MP_PORT)
+		{
+				status = sb_set_modem_info(state, cmd, (unsigned int *)arg);
+			return status;
+			}
+			break;
+		}
 #endif
 
 		case TIOCSERGWILD: /* obsolete */
@@ -1230,9 +1561,18 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 		case TIOCGGETBDNO:
 			return NR_BOARD;
 		case TIOCGGETINTERFACE:
-			return (inb(mp_devs[arg].option_reg_addr + MP_OPTR_IIR0 + (mp_devs[arg].nr_ports/8)));
+			if (mp_devs[arg].revision == 0xc0)
+			{
+				/* for SB16C1053APCI */
+				return (sb1053a_get_interface(info, info->port.line));
+			}
+			else
+			{
+				return (inb(mp_devs[arg].option_reg_addr+MP_OPTR_IIR0+(state->port->line/8)));
+			}
 		case TIOCGGETPORTTYPE:
-			return (info->port.type);
+			ret = get_device_type(arg);;
+			return ret;
 		case TIOCSMULTIECHO: /* set to multi-drop mode(RS422) or echo mode(RS485)*/
 			outb( ( inb(info->interface_config_addr) & ~0x03 ) | 0x01 ,  
 					info->interface_config_addr);
@@ -1265,24 +1605,25 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 		goto out;
 
 	MP_STATE_LOCK(state);
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 	if (tty_hung_up_p(filp)) {
 		ret = -EIO;
 		goto out_up;
 	}
-
+#endif
 	switch (cmd) {
 		case TIOCSERGETLSR: /* Get line status register */
 			ret = mp_get_lsr_info(state, (unsigned int *)arg);
 			break;
 
 		default: {
-				 struct sb_uart_port *port = state->port;
-				 if (port->ops->ioctl)
-					 ret = port->ops->ioctl(port, cmd, arg);
-				 break;
-			 }
+					struct sb_uart_port *port = state->port;
+					if (port->ops->ioctl)
+						ret = port->ops->ioctl(port, cmd, arg);
+					break;
+				}
 	}
+
 out_up:
 	MP_STATE_UNLOCK(state);
 out:
@@ -1336,16 +1677,20 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 	struct sb_uart_state *state = tty->driver_data;
 	struct sb_uart_port *port;
 
+	printk("mp_close!\n");
 	if (!state || !state->port)
 		return;
 
 	port = state->port;
 
+	printk("close1 %d\n", __LINE__);
 	MP_STATE_LOCK(state);
 
+	printk("close2 %d\n", __LINE__);
 	if (tty_hung_up_p(filp))
 		goto done;
 
+	printk("close3 %d\n", __LINE__);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))   
 	if ((tty->count == 1) && (state->count != 1)) {
 		printk("mp_close: bad serial port count; tty->count is 1, "
@@ -1353,6 +1698,7 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 		state->count = 1;
 	}
 #endif
+	printk("close4 %d\n", __LINE__);
 	if (--state->count < 0) {
 		printk("rs_close: bad serial port count for ttyMP%d: %d\n",
 				port->line, state->count);
@@ -1363,9 +1709,11 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 
 	tty->closing = 1;
 
+	printk("close5 %d\n", __LINE__);
 	if (state->closing_wait != USF_CLOSING_WAIT_NONE)
 		tty_wait_until_sent(tty, state->closing_wait);
 
+	printk("close6 %d\n", __LINE__);
 	if (state->info->flags & UIF_INITIALIZED) {
 		unsigned long flags;
 		spin_lock_irqsave(&port->lock, flags);
@@ -1373,8 +1721,10 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 		spin_unlock_irqrestore(&port->lock, flags);
 		mp_wait_until_sent(tty, port->timeout);
 	}
+	printk("close7 %d\n", __LINE__);
 
 	mp_shutdown(state);
+	printk("close8 %d\n", __LINE__);
 	mp_flush_buffer(tty);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9))
 	if (tty->ldisc.flush_buffer)
@@ -1396,16 +1746,18 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 	{
 		mp_change_pm(state, 3);
 	}
+	printk("close8 %d\n", __LINE__);
 
 	state->info->flags &= ~UIF_NORMAL_ACTIVE;
 	wake_up_interruptible(&state->info->open_wait);
 
 done:
+	printk("close done\n");
 	MP_STATE_UNLOCK(state);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
-        module_put(THIS_MODULE);
+	module_put(THIS_MODULE);
 #else
-        MOD_DEC_USE_COUNT;
+	MOD_DEC_USE_COUNT;
 #endif
 
 }
@@ -1641,9 +1993,9 @@ static int mp_open(struct tty_struct *tty, struct file *filp)
 
 	uart_clear_mctrl(state->port, TIOCM_RTS);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))           
-        try_module_get(THIS_MODULE);
+	try_module_get(THIS_MODULE);
 #else
-        MOD_INC_USE_COUNT;
+	MOD_INC_USE_COUNT;
 #endif
 fail:
 	return retval;
@@ -1663,7 +2015,7 @@ static const char *mp_type(struct sb_uart_port *port)
 
 	return str;
 }
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
 
 #ifdef CONFIG_PROC_FS
 
@@ -1883,14 +2235,16 @@ static struct tty_operations mp_ops = {
 	.break_ctl	= mp_break_ctl,
 	.wait_until_sent= mp_wait_until_sent,
 #ifdef CONFIG_PROC_FS
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
 	.proc_fops	= NULL,
 #else
 	.read_proc	= mp_read_proc,
 #endif
 #endif
+#if 1 //wlee(LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 	.tiocmget	= mp_tiocmget,
 	.tiocmset	= mp_tiocmset,
+#endif
 };
 #endif
 
@@ -1909,9 +2263,9 @@ static int mp_register_driver(struct uart_driver *drv)
 	memset(drv->state, 0, sizeof(struct sb_uart_state) * drv->nr);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)) 
-    	normal = alloc_tty_driver(drv->nr);
+	normal = alloc_tty_driver(drv->nr);
 #else
-    	normal = &drv->tty_driver;
+	normal = &drv->tty_driver;
 #endif
 	if (!normal)
 	{
@@ -1925,7 +2279,7 @@ static int mp_register_driver(struct uart_driver *drv)
 	normal->owner           = drv->owner;
 #endif
 	normal->magic		= TTY_DRIVER_MAGIC;
-    normal->driver_name     = drv->driver_name;
+	normal->driver_name     = drv->driver_name;
 	normal->name		= drv->dev_name;
 	normal->major		= drv->major;
 	normal->minor_start	= drv->minor;
@@ -1947,44 +2301,44 @@ static int mp_register_driver(struct uart_driver *drv)
 	tty_set_operations(normal, &mp_ops);
 #else
 
-	normal->refcount                = &sb_refcount;
-	normal->table                   = sb_tty;
-	normal->termios                 = sb_termios;
-	normal->termios_locked          = sb_termios_locked;
+normal->refcount                = &sb_refcount;
+normal->table                   = sb_tty;
+normal->termios                 = sb_termios;
+normal->termios_locked          = sb_termios_locked;
 
-	normal->open                    = mp_open;
-	normal->close                   = mp_close;
-	normal->write                   = mp_write;
-	normal->put_char                = mp_put_char;
-	normal->flush_chars             = mp_put_chars;
-	normal->write_room              = mp_write_room;
-	normal->chars_in_buffer         = mp_chars_in_buffer;
-	normal->flush_buffer            = mp_flush_buffer;
-	normal->ioctl                   = mp_ioctl;
-	normal->throttle                = mp_throttle;
-	normal->unthrottle              = mp_unthrottle;
-	normal->send_xchar              = mp_send_xchar;
-	normal->set_termios             = mp_set_termios;
-	normal->stop                    = mp_stop;
-	normal->start                   = mp_start;
- 	normal->hangup                  = mp_hangup;
-	normal->break_ctl               = mp_break_ctl;
-	normal->wait_until_sent         = mp_wait_until_sent;
+normal->open                    = mp_open;
+normal->close                   = mp_close;
+normal->write                   = mp_write;
+normal->put_char                = mp_put_char;
+normal->flush_chars             = mp_put_chars;
+normal->write_room              = mp_write_room;
+normal->chars_in_buffer         = mp_chars_in_buffer;
+normal->flush_buffer            = mp_flush_buffer;
+normal->ioctl                   = mp_ioctl;
+normal->throttle                = mp_throttle;
+normal->unthrottle              = mp_unthrottle;
+normal->send_xchar              = mp_send_xchar;
+normal->set_termios             = mp_set_termios;
+normal->stop                    = mp_stop;
+normal->start                   = mp_start;
+normal->hangup                  = mp_hangup;
+normal->break_ctl               = mp_break_ctl;
+normal->wait_until_sent         = mp_wait_until_sent;
 #endif
 
-	for (i = 0; i < drv->nr; i++) {
-		struct sb_uart_state *state = drv->state + i;
+for (i = 0; i < drv->nr; i++) {
+	struct sb_uart_state *state = drv->state + i;
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12))
-		state->close_delay     = 5 * HZ / 10;
-		state->closing_wait    = 30 * HZ;
-		init_MUTEX(&state->sem);
+	state->close_delay     = 5 * HZ / 10;
+	state->closing_wait    = 30 * HZ;
+	init_MUTEX(&state->sem);
 #else
 
-		state->close_delay     = 500;   
-		state->closing_wait    = 30000; 
+	state->close_delay     = 500;   
+	state->closing_wait    = 30000; 
 
-		mutex_init(&state->mutex);
+	mutex_init(&state->mutex);
 #endif
 	}
 
@@ -2150,9 +2504,10 @@ static void autoconfig(struct mp_port *mtpt, unsigned int probeflags)
 	scratch = serial_in(mtpt, UART_IIR) >> 6;
 
 	DEBUG_AUTOCONF("iir=%d ", scratch);
-
-	b_ret = read_option_register(mtpt,(MP_OPTR_DIR0 + ((mtpt->port.line)/8)));
-
+	if(mtpt->device->nr_ports >= 8)
+		b_ret = read_option_register(mtpt,(MP_OPTR_DIR0 + ((mtpt->port.line)/8)));
+	else	
+		b_ret = read_option_register(mtpt,MP_OPTR_DIR0);
 	u_type = (b_ret & 0xf0) >> 4;
 	if(mtpt->port.type == PORT_UNKNOWN )
 	{
@@ -2164,6 +2519,23 @@ static void autoconfig(struct mp_port *mtpt, unsigned int probeflags)
 			case DIR_UART_16C1050:
 				mtpt->port.type = PORT_16C105X;
 				break;
+			case DIR_UART_16C1050A:
+				if (mtpt->port.line < 2)
+				{
+					mtpt->port.type = PORT_16C105XA;
+				}
+				else
+				{
+					if (mtpt->device->device_id & 0x50)
+					{
+						mtpt->port.type = PORT_16C55X;
+					}
+					else
+					{
+						mtpt->port.type = PORT_16C105X;
+					}
+				}
+				break;
 			default:	
 				mtpt->port.type = PORT_UNKNOWN;
 				break;
@@ -2172,6 +2544,7 @@ static void autoconfig(struct mp_port *mtpt, unsigned int probeflags)
 
 	if(mtpt->port.type == PORT_UNKNOWN )
 	{
+printk("unknow2\n");
 		switch (scratch) {
 			case 0:
 			case 1:
@@ -2235,7 +2608,6 @@ static void autoconfig_irq(struct mp_port *mtpt)
 	mtpt->port.irq = (irq > 0) ? irq : 0;
 }
 
-
 static void multi_stop_tx(struct sb_uart_port *port)
 {
 	struct mp_port *mtpt = (struct mp_port *)port;
@@ -2244,6 +2616,8 @@ static void multi_stop_tx(struct sb_uart_port *port)
 		mtpt->ier &= ~UART_IER_THRI;
 		serial_out(mtpt, UART_IER, mtpt->ier);
 	}
+
+	tasklet_schedule(&port->info->tlet);
 }
 
 static void multi_start_tx(struct sb_uart_port *port)
@@ -2282,11 +2656,15 @@ static _INLINE_ void receive_chars(struct mp_port *mtpt, int *status )
 	unsigned char ch;
 	char flag;
 
-	lsr &= mtpt->port.read_status_mask;
+	//lsr &= mtpt->port.read_status_mask;
 
 	do {
-
-		if (lsr & UART_LSR_SPECIAL) {
+		if ((lsr & UART_LSR_PE) && (mtpt->port.mdmode & MDMODE_ENABLE))
+		{
+			ch = serial_inp(mtpt, UART_RX);
+		}
+		else if (lsr & UART_LSR_SPECIAL) 
+		{
 			flag = 0;
 			ch = serial_inp(mtpt, UART_RX);
 
@@ -2354,8 +2732,21 @@ static _INLINE_ void transmit_chars(struct mp_port *mtpt)
 		count = mtpt->port.fifosize;
 	}
 
+	printk("[%d] mdmode: %x\n", mtpt->port.line, mtpt->port.mdmode);
 	do {
-		serial_out(mtpt, UART_TX, xmit->buf[xmit->tail]);
+#if 0
+		/* check multi-drop mode */
+		if ((mtpt->port.mdmode & (MDMODE_ENABLE | MDMODE_ADDR)) == (MDMODE_ENABLE | MDMODE_ADDR))
+		{
+			printk("send address\n");
+			/* send multi-drop address */
+			serial_out(mtpt, UART_SCR, xmit->buf[xmit->tail]);
+		}
+		else
+#endif
+		{
+			serial_out(mtpt, UART_TX, xmit->buf[xmit->tail]);
+		}
 		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
 		mtpt->port.icount.tx++;
 	} while (--count > 0);
@@ -2388,12 +2779,15 @@ static inline void multi_handle_port(struct mp_port *mtpt)
 {
 	unsigned int status = serial_inp(mtpt, UART_LSR);
 
+	//printk("lsr: %x\n", status);
+
 	if ((status & UART_LSR_DR) || (status & UART_LSR_SPECIAL))
 		receive_chars(mtpt, &status);
 	check_modem_status(mtpt);
 	if (status & UART_LSR_THRE)
 	{
-		if (mtpt->port.type == PORT_16C105X)
+		if ((mtpt->port.type == PORT_16C105X)
+			|| (mtpt->port.type == PORT_16C105XA))
 			transmit_chars(mtpt);
 		else
 		{
@@ -2437,8 +2831,10 @@ static void multi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		mtpt = list_entry(lhead, struct mp_port, list);
 		
 		iir = serial_in(mtpt, UART_IIR);
+		printk("intrrupt! port %d, iir 0x%x\n", mtpt->port.line, iir); //wlee
 		if (!(iir & UART_IIR_NO_INT)) 
 		{
+			printk("interrupt handle\n");
 			spin_lock(&mtpt->port.lock);
 			multi_handle_port(mtpt);
 			spin_unlock(&mtpt->port.lock);
@@ -2631,12 +3027,14 @@ static int multi_startup(struct sb_uart_port *port)
 	(void) serial_inp(mtpt, UART_RX);
 	(void) serial_inp(mtpt, UART_IIR);
 	(void) serial_inp(mtpt, UART_MSR);
+	//test-wlee 9-bit disable
+	serial_outp(mtpt, UART_MSR, 0);
 
 
 	if (!(mtpt->port.flags & UPF_BUGGY_UART) &&
 			(serial_inp(mtpt, UART_LSR) == 0xff)) {
 		printk("ttyS%d: LSR safety check engaged!\n", mtpt->port.line);
-		return -ENODEV;
+		//return -ENODEV;
 	}
 
 	if ((!is_real_interrupt(mtpt->port.irq)) || (mtpt->poll_type==TYPE_POLL)) {
@@ -2771,10 +3169,13 @@ static void multi_set_termios(struct sb_uart_port *port, struct MP_TERMIOS *term
 	quot = multi_get_divisor(port, baud);
 
 	if (mtpt->capabilities & UART_USE_FIFO) {
-		if (baud < 2400)
-			fcr = UART_FCR_ENABLE_FIFO | UART_FCR_TRIGGER_1;
-		else
-			fcr = UART_FCR_ENABLE_FIFO | UART_FCR_TRIGGER_8;
+		//if (baud < 2400)
+		//	fcr = UART_FCR_ENABLE_FIFO | UART_FCR_TRIGGER_1;
+		//else
+		//	fcr = UART_FCR_ENABLE_FIFO | UART_FCR_TRIGGER_8;
+
+		//	fcr = UART_FCR_ENABLE_FIFO | 0x90;
+			fcr = fcr_arr[mtpt->port.line];
 	}
 
 	spin_lock_irqsave(&mtpt->port.lock, flags);
@@ -2826,12 +3227,16 @@ static void multi_set_termios(struct sb_uart_port *port, struct MP_TERMIOS *term
 
 	serial_outp(mtpt, UART_FCR, fcr);     /* set fcr */
 
-	if (mtpt->port.type == PORT_16C105X)
-	{
-		set_deep_fifo(port, ENABLE);
 
-		if (mtpt->interface >= RS485NE)
-			set_auto_rts(port,ENABLE);
+	if ((mtpt->port.type == PORT_16C105X)
+		|| (mtpt->port.type == PORT_16C105XA))
+	{
+		if(deep[mtpt->port.line]!=0)
+			set_deep_fifo(port, ENABLE);
+
+		if (mtpt->interface != RS232)
+			set_auto_rts(port,mtpt->interface);
+
 	}
 	else
 	{
@@ -2840,6 +3245,12 @@ static void multi_set_termios(struct sb_uart_port *port, struct MP_TERMIOS *term
 			uart_clear_mctrl(&mtpt->port, TIOCM_RTS);
 		}
 	}
+
+	if(mtpt->device->device_id == PCI_DEVICE_ID_MP4M)
+	{
+		SendATCommand(mtpt);
+		printk("SendATCommand\n");
+	}	
 	multi_set_mctrl(&mtpt->port, mtpt->port.mctrl);
 	spin_unlock_irqrestore(&mtpt->port.lock, flags);
 }
@@ -2994,10 +3405,13 @@ static void __init multi_init_ports(void)
 
 		for (i = 0; i < sbdev->nr_ports; i++, mtpt++) 
 		{
+			mtpt->device 		= sbdev;
 			mtpt->port.iobase   = sbdev->uart_access_addr + 8*i;
 			mtpt->port.irq      = sbdev->irq;
 			if ( ((sbdev->device_id == PCI_DEVICE_ID_MP4)&&(sbdev->revision==0x91)))
 				mtpt->interface_config_addr = sbdev->option_reg_addr + 0x08 + i;
+			else if (sbdev->revision == 0xc0)
+				mtpt->interface_config_addr = sbdev->option_reg_addr + 0x08 + (i & 0x1);
 			else
 				mtpt->interface_config_addr = sbdev->option_reg_addr + 0x08 + i/8;
 
@@ -3006,6 +3420,7 @@ static void __init multi_init_ports(void)
 			mtpt->poll_type = sbdev->poll_type;
 
 			mtpt->port.uartclk  = BASE_BAUD * 16;
+
 			/* get input clock infomation */
 			osc = inb(sbdev->option_reg_addr + MP_OPTR_DIR0 + i/8) & 0x0F;
 			if (osc==0x0f)
@@ -3016,7 +3431,17 @@ static void __init multi_init_ports(void)
 			mtpt->port.iotype   = UPIO_PORT;
 			mtpt->port.ops      = &multi_pops;
 
-			b_ret = read_option_register(mtpt,(MP_OPTR_IIR0 + i/8));
+			if (sbdev->revision == 0xc0)
+			{
+				/* for SB16C1053APCI */
+				b_ret = sb1053a_get_interface(mtpt, i);
+			}
+			else
+			{
+				b_ret = read_option_register(mtpt,(MP_OPTR_IIR0 + i/8));
+				printk("IIR_RET = %x\n",b_ret);
+			}
+
 			if(IIR_RS232 == (b_ret & IIR_RS232))
 			{
 				mtpt->interface = RS232;
@@ -3050,6 +3475,42 @@ static void __init multi_register_ports(struct uart_driver *drv)
 	}
 }
 
+/**
+ * pci_remap_base - remap BAR value of pci device
+ *
+ * PARAMETERS
+ *  pcidev  - pci_dev structure address
+ *  offset  - BAR offset PCI_BASE_ADDRESS_0 ~ PCI_BASE_ADDRESS_4
+ *  address - address to be changed BAR value
+ *  size	- size of address space 
+ *
+ * RETURNS
+ *  If this function performs successful, it returns 0. Otherwise, It returns -1.
+ */
+static int pci_remap_base(struct pci_dev *pcidev, unsigned int offset, 
+		unsigned int address, unsigned int size) 
+{
+	struct resource *root;
+	unsigned index = (offset - 0x10) >> 2;
+
+	pci_write_config_dword(pcidev, offset, address);
+#if 0
+	root = pcidev->resource[index].parent;
+	release_resource(&pcidev->resource[index]);
+	address &= ~0x1;
+	pcidev->resource[index].start = address;
+	pcidev->resource[index].end	  = address + size - 1;
+
+	if (request_resource(root, &pcidev->resource[index]) != NULL)
+	{
+		printk(KERN_ERR "pci remap conflict!! 0x%x\n", address);
+		return (-1);
+	}
+#endif
+
+	return (0);
+}
+
 static int init_mp_dev(struct pci_dev *pcidev, mppcibrd_t brd)
 {
 	static struct mp_device_t * sbdev = mp_devs;
@@ -3061,10 +3522,29 @@ static int init_mp_dev(struct pci_dev *pcidev, mppcibrd_t brd)
 	pci_read_config_byte(pcidev, PCI_CLASS_REVISION, &(sbdev->revision));
 	sbdev->name = brd.name;
 	sbdev->uart_access_addr = pcidev->resource[0].start & PCI_BASE_ADDRESS_IO_MASK;
-	sbdev->option_reg_addr = pcidev->resource[1].start & PCI_BASE_ADDRESS_IO_MASK;
+
+	/* check revision. The SB16C1053APCI's option i/o address is BAR4 */
+	if (sbdev->revision == 0xc0)
+	{
+		/* SB16C1053APCI */
+		sbdev->option_reg_addr = pcidev->resource[4].start & PCI_BASE_ADDRESS_IO_MASK;
+	}
+	else
+	{
+		sbdev->option_reg_addr = pcidev->resource[1].start & PCI_BASE_ADDRESS_IO_MASK;
+	}
+#if 1	
+	if (sbdev->revision == 0xc0)
+	{
+		outb(0x00, sbdev->option_reg_addr + MP_OPTR_GPOCR);
+		inb(sbdev->option_reg_addr + MP_OPTR_GPOCR);
+		outb(0x83, sbdev->option_reg_addr + MP_OPTR_GPOCR);
+	}
+#endif
+
 	sbdev->irq = pcidev->irq;
 
-	if (brd.device_id & 0x0800)
+	if ((brd.device_id & 0x0800) || !(brd.device_id &0xff00))
 	{
 		sbdev->poll_type = TYPE_INTERRUPT;
 	}
@@ -3077,14 +3557,34 @@ static int init_mp_dev(struct pci_dev *pcidev, mppcibrd_t brd)
 	switch(brd.device_id){
 		case PCI_DEVICE_ID_MP1 :
 		case PCIE_DEVICE_ID_MP1 :
+		case PCIE_DEVICE_ID_MP1E :
+		case PCIE_DEVICE_ID_GT_MP1 :
 			sbdev->nr_ports = 1;
 			break;
 		case PCI_DEVICE_ID_MP2 :
 		case PCIE_DEVICE_ID_MP2 :
+		case PCIE_DEVICE_ID_GT_MP2 :
+		case PCIE_DEVICE_ID_MP2B :
+		case PCIE_DEVICE_ID_MP2E :
 			sbdev->nr_ports = 2;
+
+			/* serial base address remap */
+			if (sbdev->revision == 0xc0)
+			{
+				int prev_port_addr = 0;
+
+				pci_read_config_dword(pcidev, PCI_BASE_ADDRESS_0, &prev_port_addr);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_1, prev_port_addr + 8, 8);
+			}
 			break;
 		case PCI_DEVICE_ID_MP4 :
+		case PCI_DEVICE_ID_MP4A :
 		case PCIE_DEVICE_ID_MP4 :
+		case PCI_DEVICE_ID_GT_MP4 :
+		case PCI_DEVICE_ID_GT_MP4A :
+		case PCIE_DEVICE_ID_GT_MP4 :
+		case PCI_DEVICE_ID_MP4M :
+		case PCIE_DEVICE_ID_MP4B :
 			sbdev->nr_ports = 4;
 
 			if(sbdev->revision == 0x91){
@@ -3097,24 +3597,83 @@ static int init_mp_dev(struct pci_dev *pcidev, mppcibrd_t brd)
 				sbdev->uart_access_addr = pcidev->resource[1].start & PCI_BASE_ADDRESS_IO_MASK;
 				sbdev->option_reg_addr = pcidev->resource[2].start & PCI_BASE_ADDRESS_IO_MASK;
 			}
+
+			/* SB16C1053APCI */
+			if (sbdev->revision == 0xc0)
+			{
+				int prev_port_addr = 0;
+
+				pci_read_config_dword(pcidev, PCI_BASE_ADDRESS_0, &prev_port_addr);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_1, prev_port_addr + 8, 8);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_2, prev_port_addr + 16, 8);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_3, prev_port_addr + 24, 8);
+			}
+			break;
+		case PCI_DEVICE_ID_MP6 :
+		case PCI_DEVICE_ID_MP6A :
+		case PCI_DEVICE_ID_GT_MP6 :
+		case PCI_DEVICE_ID_GT_MP6A :
+			sbdev->nr_ports = 6;
+
+			/* SB16C1053APCI */
+			if (sbdev->revision == 0xc0)
+			{
+				int prev_port_addr = 0;
+
+				pci_read_config_dword(pcidev, PCI_BASE_ADDRESS_0, &prev_port_addr);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_1, prev_port_addr + 8, 8);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_2, prev_port_addr + 16, 16);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_3, prev_port_addr + 32, 16);
+			}
 			break;
 		case PCI_DEVICE_ID_MP8 :
 		case PCIE_DEVICE_ID_MP8 :
+		case PCI_DEVICE_ID_GT_MP8 :
+		case PCIE_DEVICE_ID_GT_MP8 :
+		case PCIE_DEVICE_ID_MP8B :
 			sbdev->nr_ports = 8;
 			break;
 		case PCI_DEVICE_ID_MP32 :
 		case PCIE_DEVICE_ID_MP32 :
+		case PCI_DEVICE_ID_GT_MP32 :
+		case PCIE_DEVICE_ID_GT_MP32 :
 			{
 				int portnum_hex=0;
 				portnum_hex = inb(sbdev->option_reg_addr);
 				sbdev->nr_ports = ((portnum_hex/16)*10) + (portnum_hex % 16);
 			}
 			break;
+		case PCI_DEVICE_ID_MP2S1P :
+			sbdev->nr_ports = 2;
+
+			/* SB16C1053APCI */
+			if (sbdev->revision == 0xc0)
+			{
+				int prev_port_addr = 0;
+
+				pci_read_config_dword(pcidev, PCI_BASE_ADDRESS_0, &prev_port_addr);
+				pci_remap_base(pcidev, PCI_BASE_ADDRESS_1, prev_port_addr + 8, 8);
+			}
+
+			/* add PC compatible parallel port */
+			parport_pc_probe_port(pcidev->resource[2].start, pcidev->resource[3].start, PARPORT_IRQ_NONE, PARPORT_DMA_NONE, &pcidev->dev, 0);
+			break;
+		case PCI_DEVICE_ID_MP1P :
+			/* add PC compatible parallel port */
+			parport_pc_probe_port(pcidev->resource[2].start, pcidev->resource[3].start, PARPORT_IRQ_NONE, PARPORT_DMA_NONE, &pcidev->dev, 0);
+			break;
 	}
 
 	ret = request_region(sbdev->uart_access_addr, (8*sbdev->nr_ports), sbdev->name);
 
-	ret = request_region(sbdev->option_reg_addr, 32, sbdev->name);
+	if (sbdev->revision == 0xc0)
+	{
+		ret = request_region(sbdev->option_reg_addr, 0x40, sbdev->name);
+	}
+	else
+	{
+		ret = request_region(sbdev->option_reg_addr, 0x20, sbdev->name);
+	}
 
 
 	NR_BOARD++;
@@ -3138,6 +3697,40 @@ static int __init multi_init(void)
 {
 	int ret, i;
 	struct pci_dev  *dev = NULL;
+
+	if(fcr_count==0)
+	{
+		for(i=0;i<256;i++)
+		{
+			fcr_arr[i] = 0x01;
+			
+		}
+	}
+	if(deep_count==0)
+	{
+		for(i=0;i<256;i++)
+		{
+			deep[i] = 1;
+			
+		}
+	}
+	if(rtr_count==0)
+        {
+                for(i=0;i<256;i++)
+                {
+                        rtr[i] = 0x10;
+                }
+        }
+	if(ttr_count==0)
+        {
+                for(i=0;i<256;i++)
+                {
+                        ttr[i] = 0x38;
+                }
+        }
+
+
+printk("MULTI INIT\n");
 	for( i=0; i< mp_nrpcibrds; i++)
 	{
 
@@ -3148,6 +3741,7 @@ static int __init multi_init(void)
 #endif
 
 		{
+printk("FOUND~~~\n");
 //	Cent OS bug fix
 //			if (mp_pciboards[i].device_id & 0x0800)
 			{
@@ -3165,7 +3759,7 @@ static int __init multi_init(void)
            			}
 			}
 
-			init_mp_dev(dev, mp_pciboards[i]);
+			init_mp_dev(dev, mp_pciboards[i]);	
 		}
 	}
 

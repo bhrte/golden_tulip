@@ -27,6 +27,7 @@
 
 #define DIR_UART_16C550 	0
 #define DIR_UART_16C1050	1
+#define DIR_UART_16C1050A	2
 
 #define	DIR_CLK_1843200		0x0		/* input clock 1843200 Hz */
 #define	DIR_CLK_3686400		0x1		/* input clock 3686400 Hz */
@@ -57,6 +58,15 @@
 #define MP_OPTR_IPR1		0x11 	/* port8 ~ port15 */
 #define MP_OPTR_IPR2		0x12 	/* port16 ~ port23 */
 #define MP_OPTR_IPR3		0x13 	/* port24 ~ port31 */
+
+/* General Purpose Output Control Register */
+#define MP_OPTR_GPOCR		0x20
+
+/* General Purpose Output Data Register */
+#define MP_OPTR_GPODR		0x21
+
+/* Parallel Additional Function Register */
+#define MP_OPTR_PAFR		0x23
 
 /*
  * systembase 16c105x UART register
@@ -162,6 +172,11 @@
 #define SB105X_MSR_DRI		0x04  /* Delta ring indicator */
 #define SB105X_MSR_DDSR		0x02  /* Delta DSR */
 #define SB105X_MSR_DCTS		0x01  /* Delta CTS */
+
+#define SB105XA_MDR		6	/* Out: Multi Drop mode Register */
+#define SB105XA_MDR_NPS		0x08  /* 9th Bit Polarity Select */
+#define SB105XA_MDR_AME		0x02  /* Auto Multi-drop Enable */
+#define SB105XA_MDR_MDE		0x01  /* Multi Drop Enable */
 
 #define SB105X_SPR		7	/* I/O: Scratch Register */
 

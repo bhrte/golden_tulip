@@ -22,8 +22,8 @@
 #define RS485NE         4
 #define RS485ECHO       5
 
-static char *sw_version = "4.1";
-static char *sw_revdate = "2010-01-29";
+static char *sw_version = "4.6";
+static char *sw_revdate = "2012-02-03";
 
 void MKNOD(char *filename, int major, int minor);
 
@@ -74,6 +74,23 @@ int main(int argc, char *argv[])
 			case 0x4504: sprintf(dev_name[i],"Multi-4 PCIe");break;
 			case 0x4508: sprintf(dev_name[i],"Multi-8 PCIe");break;
 			case 0x4532: sprintf(dev_name[i],"Multi-32 PCIe");break;
+
+			case 0x4e01: sprintf(dev_name[i],"Multi-1 PCIe E");break;
+			case 0x4e02: sprintf(dev_name[i],"Multi-2 PCIe E");break;
+			case 0x4b02: sprintf(dev_name[i],"Multi-2 PCIe B");break;
+			case 0x4b04: sprintf(dev_name[i],"Multi-4 PCIe B");break;
+			case 0x4b08: sprintf(dev_name[i],"Multi-8 PCIe B");break;
+
+			case 0x0004: sprintf(dev_name[i],"Multi-4(GT) PCI");break;
+			case 0x0008: sprintf(dev_name[i],"Multi-8(GT) PCI");break;
+			case 0x0032: sprintf(dev_name[i],"Multi-32(GT) PCI");break;
+			case 0x1501: sprintf(dev_name[i],"Multi-1(GT) PCIe");break;
+			case 0x1502: sprintf(dev_name[i],"Multi-2(GT) PCIe");break;
+			case 0x1504: sprintf(dev_name[i],"Multi-4(GT) PCIe");break;
+			case 0x1508: sprintf(dev_name[i],"Multi-8(GT) PCIe");break;
+			case 0x1532: sprintf(dev_name[i],"Multi-32(GT) PCIe");break;
+
+			case 0x4604: sprintf(dev_name[i],"Multi-4M PCI");break;  //modem
 		}
 		if ((interface[i] & 0xf0)==0x00) 
 			sprintf(interface_name[i],"RS232");
@@ -86,6 +103,8 @@ int main(int argc, char *argv[])
 			sprintf(port_type_name[i],"16C55X");
 		else if (port_type[i]==0x02) 
 			sprintf(port_type_name[i],"16C105X");
+		else if (port_type[i]==0x03) 
+			sprintf(port_type_name[i],"16C105XA");
 		else
 			sprintf(port_type_name[i],"UNKNOWN");
 		
@@ -100,9 +119,8 @@ int main(int argc, char *argv[])
 	}
 	
 	printf("================================================================\n");
-	printf("	SystemBase Multiport PCI/PCIe Board Installation	\n");
+	printf("	Enhanced Async Multi-Port(PCI/PCIe) Linux Device Driver	\n");
 	printf("	Version : %s	revision: %s\n", sw_version, sw_revdate);
-	printf("		contact: tech@sysbas.com\n");
 	printf("================================================================\n");
 	printf(" %d board(s) installed \n", nr_bds );
 	for(i=0;i<nr_bds;i++)
