@@ -6,3 +6,7 @@
 Module.symvers
 golden_tulip.mod.c
 modules.order
+async_multiport/sb_test
+ioctl/sb_ioctl
+multidrop_test/sb_test
+sb_config
