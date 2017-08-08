@@ -177,6 +177,11 @@ static _INLINE_ void serial_out(struct mp_port *mtpt, int offset, int value)
 	outb(value, mtpt->port.iobase + offset);
 }
 
+static _INLINE_ void serial_out_p(struct sb_uart_port *port, int offset, int value)
+{
+	outb(value, port->iobase + offset);
+}
+
 static _INLINE_ unsigned int read_option_register(struct mp_port *mtpt, int offset)
 {
 	return inb(mtpt->option_base_addr + offset);
@@ -1501,7 +1506,7 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 				ret = sb1054_set_register(state->port,PAGE_1,SB105X_FCR,arg);
 			}
 			else{
-				serial_out(state->port,2,(unsigned long)arg);
+				serial_out_p(state->port,2,(unsigned long)arg);
 			}
 
 			return ret;
