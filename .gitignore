@@ -1,2 +1,8 @@
 *.swp
-
+*.o
+*.ko
+*.cmd
+*.mod
+Module.symvers
+golden_tulip.mod.c
+modules.order
