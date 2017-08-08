@@ -230,7 +230,7 @@ void SET_PORT(char *port, char *cmd, char *value)
 	else if(strcmp(cmd,"-T")==0){
 		sscanf(value,"%d",&dec);
 		if(0 <= dec && dec <= 255){
-			sprintf(hex,"%x",dec);
+			sprintf((char*)&hex,"%x",dec);
 			ret = ioctl(fd,SETTTR,hex);
 			printf("ret = %d\n",ret);
 		}
@@ -241,7 +241,7 @@ void SET_PORT(char *port, char *cmd, char *value)
 	else if(strcmp(cmd,"-R")==0){
 		sscanf(value,"%d",&dec);
 		if(0 <= dec && dec <= 255){
-			sprintf(hex,"%x",dec);
+			sprintf((char*)&hex,"%x",dec);
 			ret = ioctl(fd,SETRTR,hex);
 			printf("ret = %d\n",ret);
 		}
