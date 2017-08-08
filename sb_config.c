@@ -3,7 +3,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <errno.h>
 #include <linux/version.h>
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION(ver,rel,seq)     ((ver << 16) | (rel << 8) | seq)
@@ -22,8 +24,8 @@
 #define RS485NE         4
 #define RS485ECHO       5
 
-static char *sw_version = "4.6";
-static char *sw_revdate = "2012-02-03";
+static char *sw_version = "21.0";
+static char *sw_revdate = "2016-01-12";
 
 void MKNOD(char *filename, int major, int minor);
 
@@ -48,6 +50,9 @@ int main(int argc, char *argv[])
 	MKNOD("/dev/ttyMPCON",54,0);
 	
 	if( (fd = open("/dev/ttyMPCON",O_RDWR)) < 0 ){
+	printf("%d,%d,%d\n",ENOENT,ENOTDIR,ENXIO);	
+	printf("line= %d\n",errno);
+
 		printf("Can't open /dev/ttyMPCON\n");
 		printf("Please check your board in slot..\n");
 		return -1;
@@ -80,6 +85,7 @@ int main(int argc, char *argv[])
 			case 0x4b02: sprintf(dev_name[i],"Multi-2 PCIe B");break;
 			case 0x4b04: sprintf(dev_name[i],"Multi-4 PCIe B");break;
 			case 0x4b08: sprintf(dev_name[i],"Multi-8 PCIe B");break;
+			case 0x4b32: sprintf(dev_name[i],"Multi-32 PCIe B");break;
 
 			case 0x0004: sprintf(dev_name[i],"Multi-4(GT) PCI");break;
 			case 0x0008: sprintf(dev_name[i],"Multi-8(GT) PCI");break;

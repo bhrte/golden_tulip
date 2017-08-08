@@ -30,18 +30,13 @@
 int fcr[256];
 void Usage(void)
 {
-	printf("Usage     : ./sb_ioctl Command [Port Name] [Parameter]\n");
-	printf("Command   : GETINFO     > Print All Port Infomation(DeepFifo,FCR,TTR,RTR)\n");
-	printf("          : setdeepfifo > Setting [Port Name] of deepfifo to [Parameter]\n");
-	printf("	  : getdeepfifo > Print [Port Name] of deepfifo\n");
-	printf("	  : setfcr      > Setting [Port Name] of FCR to [Parameter]\n");
-	printf("	  : getfcr      > Print [Port Name] of FCR\n");
-	printf("	  : setttr      > Setting [Port Name] of TTR to [Parameter]\n");
-	printf("	  : getttr      > Print [Port Name] of TTR\n");
-	printf("	  : setrtr      > Setting [Port Name] of RTR to [Parameter]\n");
-	printf("	  : getrtr      > Print [Port Name] of RTR\n");
+	printf("Usage     : ./sb_ioctl [Port Name] [Command] [Value]\n");
 	printf("Port Name : /dev/ttyMP0 ~ /dev/ttyMP256\n");
-	printf("Parameter : Parameter is Hexadecimal Number\n");
+	printf("Command   : -D > Print All Port Infomation(256Fifo,FCR,TTR,RTR)\n");
+	printf("          : -F > Setting [Port Name] of 256-Byte FIFO to [enable/disable]\n");
+	printf("	  : -T > Setting [Port Name] of TxTriggerLevel to [value]\n");
+	printf("	  : -R > Setting [Port Name] of RxTriggerLevel to [value]\n");
+	printf("Value 	  : Value is Decimal Number\n");
 }
 
 
@@ -210,10 +205,11 @@ void Save(int maxPort)
 
 }
 
-void SET_PORT(char *port, char *cmd, int num)
+void SET_PORT(char *port, char *cmd, char *value)
 {
 	int fd, ret;
 	int pt;
+	int hex, dec;
 
 	if((fd=open(port,O_RDWR))<0){
                 printf("Can't open %s\n",port);
@@ -221,40 +217,36 @@ void SET_PORT(char *port, char *cmd, int num)
                      return ;
          }
 
-	if(strcmp(cmd,"setdeepfifo")==0){
-        	 ret = ioctl(fd,SETDEEPFIFO,num);
+	if(strcmp(cmd,"-F")==0){
+        	if(strcmp(value,"enable")==0){
+	       		ret = ioctl(fd,SETDEEPFIFO,ENABLE);
+		}
+		else if(strcmp(value,"disable")==0){
+	       		ret = ioctl(fd,SETDEEPFIFO,DISABLE);
+		}
 		printf("ret = %d\n",ret);
 	}
-	else if(strcmp(cmd,"getdeepfifo")==0){
-		ret = ioctl(fd,GETDEEPFIFO,num);
-		printf("%s_DEEPFIFO = %x\n",port,ret);
+	else if(strcmp(cmd,"-T")==0){
+		sscanf(value,"%d",&dec);
+		if(0 <= dec && dec <= 255){
+			sprintf(hex,"%x",dec);
+			ret = ioctl(fd,SETTTR,hex);
+			printf("ret = %d\n",ret);
+		}
+		else{
+			printf("Input is out of range\n");
+		}
 	}
-	else if(strcmp(cmd,"setfcr")==0){
-		ret  = ioctl(fd,SETFCR,num);
-		sscanf(port,"/dev/ttyMP%d",&pt);
-		fcr[pt] = num;	
-		printf("ret = %d\n",ret);
-	}
-	else if(strcmp(cmd,"getfcr")==0){
-		sscanf(port,"/dev/ttyMP%d",&pt);
-		printf("%s_FCR = %x\n",port,fcr[pt]);
-	}	
-
-	else if(strcmp(cmd,"getttr")==0){
-		ret = ioctl(fd,GETTTR,0);
-		printf("%s_TTR = %x\n",port,ret);
-	}
-	else if(strcmp(cmd,"setttr")==0){
-		ret = ioctl(fd,SETTTR,num);
-		printf("ret = %d\n",ret);
-	}
-	else if(strcmp(cmd,"getrtr")==0){
-		ret = ioctl(fd,GETRTR,0);
-		printf("%s_RTR = %x\n",port,ret);
-	}	
-	else if(strcmp(cmd,"setrtr")==0){
-		ret = ioctl(fd,SETRTR,0);
-		printf("ret = %d\n",ret);
+	else if(strcmp(cmd,"-R")==0){
+		sscanf(value,"%d",&dec);
+		if(0 <= dec && dec <= 255){
+			sprintf(hex,"%x",dec);
+			ret = ioctl(fd,SETRTR,hex);
+			printf("ret = %d\n",ret);
+		}
+		else{
+			printf("Input is out of range\n");
+		}
 	}
         close(fd);
 
@@ -278,12 +270,10 @@ int main(int argc, char *argv[])
 	ReadFCR(all_port);
 	
 	if(argc>1){
-		if(strcmp(argv[1],"GETINFO")==0)
+		if(strcmp(argv[2],"-D")==0)
 			GetInfo(all_port);
 		else{
-			sscanf(argv[3],"%x",&hex);
-
-			SET_PORT(argv[2],argv[1],hex);
+			SET_PORT(argv[1],argv[2],argv[3]);
 		}
 	}
 	else

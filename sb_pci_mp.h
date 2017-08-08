@@ -61,7 +61,9 @@
 #include <linux/circ_buf.h>
 
 #include <asm/uaccess.h>
+#if (LINUX_VERSION_CODE <= KERNEL_VERSION(3,3,0))
 #include <asm/system.h>
+#endif
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/segment.h>
@@ -118,6 +120,7 @@
 #define PCIE_DEVICE_ID_MP2B		0x4b02
 #define PCIE_DEVICE_ID_MP4B		0x4b04
 #define PCIE_DEVICE_ID_MP8B		0x4b08
+#define PCIE_DEVICE_ID_MP32B		0x4b32
 
 #define PCI_DEVICE_ID_GT_MP4		0x0004
 #define PCI_DEVICE_ID_GT_MP4A		0x0054
@@ -299,6 +302,7 @@ static mppcibrd_t mp_pciboards[] = {
         { "Multi-2 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP2B} ,
         { "Multi-4 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP4B} ,
         { "Multi-8 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP8B} ,
+        { "Multi-32 PCIe B", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_MP32B} ,
 
         { "Multi-1(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP1} ,
         { "Multi-2(GT) PCIe", PCI_VENDOR_ID_MULTIPORT , PCIE_DEVICE_ID_GT_MP2} ,
@@ -338,7 +342,13 @@ struct irq_info {
         struct list_head    *head;
 };
 
-static const struct serial_uart_config uart_config[] = {
+struct sb105x_uart_config {
+	char    *name;
+	int     dfl_xmit_fifo_size;
+	int     flags;
+};
+
+static const struct sb105x_uart_config uart_config[] = {
         { "unknown",    1,  0 },
         { "16550A", 16, UART_CLEAR_FIFO | UART_USE_FIFO },
         { "SB16C1050",    128,    UART_CLEAR_FIFO | UART_USE_FIFO | UART_STARTECH },
@@ -351,6 +361,8 @@ static struct termios                           *sb_termios[MAX_MP_PORT];
 static struct termios                           *sb_termios_locked[MAX_MP_PORT];
 #endif
 
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+static struct tty_port tt_port[MAX_MP_PORT];
+#endif
 
 

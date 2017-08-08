@@ -1,4 +1,9 @@
 #include "sb_pci_mp.h"
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
+#include <linux/module.h>
+#endif
+
 #include <linux/parport.h>
 
 extern struct parport *parport_pc_probe_port(unsigned long base_lo,
@@ -156,10 +161,10 @@ static int ttr_count;
 static int rtr[256];
 static int rtr_count;
 
-module_param_array(deep,int,&deep_count,0);
-module_param_array(fcr_arr,int,&fcr_count,0);
-module_param_array(ttr,int,&ttr_count,0);
-module_param_array(rtr,int,&rtr_count,0);
+//module_param_array(deep,int,&deep_count,0);
+//module_param_array(fcr_arr,int,&fcr_count,0);
+//module_param_array(ttr,int,&ttr_count,0);
+//module_param_array(rtr,int,&rtr_count,0);
 
 static _INLINE_ unsigned int serial_in(struct mp_port *mtpt, int offset)
 {
@@ -377,7 +382,7 @@ static void SendATCommand(struct mp_port * mtpt)
 	//		      a    t	cr   lf
 	unsigned char ch[] = {0x61,0x74,0x0d,0x0a,0x0};
 	unsigned char lineControl;
-	unsigned char i=0,j=0;
+	unsigned char i=0;
 	unsigned char Divisor = 0xc;
 
 	lineControl = serial_inp(mtpt,UART_LCR);
@@ -393,8 +398,6 @@ static void SendATCommand(struct mp_port * mtpt)
 	while(ch[i]){
 		while((serial_inp(mtpt,UART_LSR) & 0x60) !=0x60){
 			;
-			//if(j++ > 100)
-			//break;
 		}
 		serial_outp(mtpt,0,ch[i++]);
 	}
@@ -520,7 +523,6 @@ static void __mp_start(struct tty_struct *tty)
 {
 	struct sb_uart_state *state = tty->driver_data;
 	struct sb_uart_port *port = state->port;
-
 	if (!uart_circ_empty(&state->info->xmit) && state->info->xmit.buf &&
 			!tty->stopped && !tty->hw_stopped)
 		port->ops->start_tx(port);
@@ -536,7 +538,7 @@ static void mp_tasklet_action(unsigned long data)
 	struct sb_uart_state *state = (struct sb_uart_state *)data;
 	struct tty_struct *tty;
 
-	printk("tasklet is called!\n");
+	//printk("tasklet is called!\n");
 	tty = state->info->tty;
 #if (LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,9))
 	if (tty) {
@@ -547,7 +549,7 @@ static void mp_tasklet_action(unsigned long data)
 		wake_up_interruptible(&tty->write_wait);
 	}
 #else
-	tty_wakeup(tty);
+	//tty_wakeup(tty);
 #endif
 }
 
@@ -599,7 +601,11 @@ static int mp_startup(struct sb_uart_state *state, int init_hw)
 		if (init_hw) {
 			mp_change_speed(state, NULL);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+			if (info->tty->termios.c_cflag & CBAUD)
+#else
 			if (info->tty->termios->c_cflag & CBAUD)
+#endif
 				uart_set_mctrl(port, TIOCM_RTS | TIOCM_DTR);
 		}
 
@@ -626,7 +632,11 @@ static void mp_shutdown(struct sb_uart_state *state)
 	if (info->flags & UIF_INITIALIZED) {
 		info->flags &= ~UIF_INITIALIZED;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+		if (!info->tty || (info->tty->termios.c_cflag & HUPCL))
+#else
 		if (!info->tty || (info->tty->termios->c_cflag & HUPCL))
+#endif
 			uart_clear_mctrl(port, TIOCM_DTR | TIOCM_RTS);
 
 		wake_up_interruptible(&info->delta_msr_wait);
@@ -649,24 +659,41 @@ static void mp_change_speed(struct sb_uart_state *state, struct MP_TERMIOS *old_
 {
 	struct tty_struct *tty = state->info->tty;
 	struct sb_uart_port *port = state->port;
-	struct MP_TERMIOS *termios;
 
-	if (!tty || !tty->termios || port->type == PORT_UNKNOWN)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))  
+	if (!tty || port->type == PORT_UNKNOWN)
 		return;
 
-	termios = tty->termios;
-
-	if (termios->c_cflag & CRTSCTS)
+	if (tty->termios.c_cflag & CRTSCTS)
 		state->info->flags |= UIF_CTS_FLOW;
 	else
 		state->info->flags &= ~UIF_CTS_FLOW;
 
-	if (termios->c_cflag & CLOCAL)
+	if (tty->termios.c_cflag & CLOCAL)
+		state->info->flags &= ~UIF_CHECK_CD;
+	else
+		state->info->flags |= UIF_CHECK_CD;
+
+	port->ops->set_termios(port, &tty->termios, old_termios);
+#else
+	struct MP_TERMIOS *termios;
+
+	if (!tty || !tty->termios || port->type == PORT_UNKNOWN)
+		return;
+	termios = tty->termios;
+
+	if (tty->termios->c_cflag & CRTSCTS)
+		state->info->flags |= UIF_CTS_FLOW;
+	else
+		state->info->flags &= ~UIF_CTS_FLOW;
+
+	if (tty->termios->c_cflag & CLOCAL)
 		state->info->flags &= ~UIF_CHECK_CD;
 	else
 		state->info->flags |= UIF_CHECK_CD;
 
 	port->ops->set_termios(port, termios, old_termios);
+#endif
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26))
@@ -805,7 +832,7 @@ static void mp_flush_buffer(struct tty_struct *tty)
 	spin_unlock_irqrestore(&port->lock, flags);
 	wake_up_interruptible(&tty->write_wait);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26))
-	tty_wakeup(tty);
+	//tty_wakeup(tty);
 #else
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) && tty->ldisc.write_wakeup)
 	{
@@ -839,7 +866,11 @@ static void mp_throttle(struct tty_struct *tty)
 	if (I_IXOFF(tty))
 		mp_send_xchar(tty, STOP_CHAR(tty));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+	if (tty->termios.c_cflag & CRTSCTS)
+#else
 	if (tty->termios->c_cflag & CRTSCTS)
+#endif
 		uart_clear_mctrl(state->port, TIOCM_RTS);
 }
 
@@ -855,7 +886,11 @@ static void mp_unthrottle(struct tty_struct *tty)
 			mp_send_xchar(tty, START_CHAR(tty));
 	}
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+	if (tty->termios.c_cflag & CRTSCTS)
+#else
 	if (tty->termios->c_cflag & CRTSCTS)
+#endif
 		uart_set_mctrl(port, TIOCM_RTS);
 }
 
@@ -1014,9 +1049,11 @@ static int mp_set_info(struct sb_uart_state *state, struct serial_struct *newinf
 	state->closing_wait    = closing_wait;
 #endif
 	port->fifosize         = new_serial.xmit_fifo_size;
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0))
 	if (state->info->tty)
-		state->info->tty->low_latency =
-			(port->flags & UPF_LOW_LATENCY) ? 1 : 0;
+		state->info->tty->low_latency =	(port->flags & UPF_LOW_LATENCY) ? 1 : 0;
+#endif
 
 check_and_exit:
 	retval = 0;
@@ -1463,7 +1500,7 @@ static int mp_ioctl(struct tty_struct *tty, struct file *filp, unsigned int cmd,
 				ret = sb1054_set_register(state->port,PAGE_1,SB105X_FCR,arg);
 			}
 			else{
-				serial_out(state->port,2,arg);
+				serial_out(state->port,2,(unsigned long)arg);
 			}
 
 			return ret;
@@ -1634,12 +1671,18 @@ static void mp_set_termios(struct tty_struct *tty, struct MP_TERMIOS *old_termio
 {
 	struct sb_uart_state *state = tty->driver_data;
 	unsigned long flags;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+	unsigned int cflag = tty->termios.c_cflag;
+#else
 	unsigned int cflag = tty->termios->c_cflag;
-
+#endif
 #define RELEVANT_IFLAG(iflag)	((iflag) & (IGNBRK|BRKINT|IGNPAR|PARMRK|INPCK))
 
-	if ((cflag ^ old_termios->c_cflag) == 0 &&
-			RELEVANT_IFLAG(tty->termios->c_iflag ^ old_termios->c_iflag) == 0)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+	if((cflag^old_termios->c_cflag)==0&&RELEVANT_IFLAG(tty->termios.c_iflag^old_termios->c_iflag)==0)
+#else
+	if((cflag^old_termios->c_cflag)==0&&RELEVANT_IFLAG(tty->termios->c_iflag^old_termios->c_iflag)==0)
+#endif
 		return;
 
 	mp_change_speed(state, old_termios);
@@ -1677,20 +1720,16 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 	struct sb_uart_state *state = tty->driver_data;
 	struct sb_uart_port *port;
 
-	printk("mp_close!\n");
 	if (!state || !state->port)
 		return;
 
 	port = state->port;
 
-	printk("close1 %d\n", __LINE__);
 	MP_STATE_LOCK(state);
 
-	printk("close2 %d\n", __LINE__);
 	if (tty_hung_up_p(filp))
 		goto done;
 
-	printk("close3 %d\n", __LINE__);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))   
 	if ((tty->count == 1) && (state->count != 1)) {
 		printk("mp_close: bad serial port count; tty->count is 1, "
@@ -1698,7 +1737,6 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 		state->count = 1;
 	}
 #endif
-	printk("close4 %d\n", __LINE__);
 	if (--state->count < 0) {
 		printk("rs_close: bad serial port count for ttyMP%d: %d\n",
 				port->line, state->count);
@@ -1709,11 +1747,9 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 
 	tty->closing = 1;
 
-	printk("close5 %d\n", __LINE__);
 	if (state->closing_wait != USF_CLOSING_WAIT_NONE)
 		tty_wait_until_sent(tty, state->closing_wait);
 
-	printk("close6 %d\n", __LINE__);
 	if (state->info->flags & UIF_INITIALIZED) {
 		unsigned long flags;
 		spin_lock_irqsave(&port->lock, flags);
@@ -1721,16 +1757,14 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 		spin_unlock_irqrestore(&port->lock, flags);
 		mp_wait_until_sent(tty, port->timeout);
 	}
-	printk("close7 %d\n", __LINE__);
 
 	mp_shutdown(state);
-	printk("close8 %d\n", __LINE__);
 	mp_flush_buffer(tty);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9))
 	if (tty->ldisc.flush_buffer)
 		tty->ldisc.flush_buffer(tty);
 #else
-	tty_ldisc_flush(tty);
+	//tty_ldisc_flush(tty);
 #endif
 	tty->closing = 0;
 	state->info->tty = NULL;
@@ -1746,16 +1780,18 @@ static void mp_close(struct tty_struct *tty, struct file *filp)
 	{
 		mp_change_pm(state, 3);
 	}
-	printk("close8 %d\n", __LINE__);
 
 	state->info->flags &= ~UIF_NORMAL_ACTIVE;
 	wake_up_interruptible(&state->info->open_wait);
 
 done:
-	printk("close done\n");
 	MP_STATE_UNLOCK(state);
+
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0))
 	module_put(THIS_MODULE);
+#endif
 #else
 	MOD_DEC_USE_COUNT;
 #endif
@@ -1819,7 +1855,11 @@ static void mp_update_termios(struct sb_uart_state *state)
 	if (!(tty->flags & (1 << TTY_IO_ERROR))) {
 		mp_change_speed(state, NULL);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+		if (tty->termios.c_cflag & CBAUD)
+#else
 		if (tty->termios->c_cflag & CBAUD)
+#endif
 			uart_set_mctrl(port, TIOCM_DTR | TIOCM_RTS);
 	}
 }
@@ -1845,12 +1885,20 @@ static int mp_block_til_ready(struct file *filp, struct sb_uart_state *state)
 			break;
 
 		if ((filp->f_flags & O_NONBLOCK) ||
-				(info->tty->termios->c_cflag & CLOCAL) ||
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+				(info->tty->termios.c_cflag & CLOCAL) ||
+#else 
+				(info->tty->termios->c_cflag & CLOCAL) || 
+#endif
 				(info->tty->flags & (1 << TTY_IO_ERROR))) {
 			break;
 		}
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+		if (info->tty->termios.c_cflag & CBAUD)
+#else
 		if (info->tty->termios->c_cflag & CBAUD)
+#endif
 			uart_set_mctrl(port, TIOCM_DTR);
 
 		spin_lock_irq(&port->lock);
@@ -1965,7 +2013,9 @@ static int mp_open(struct tty_struct *tty, struct file *filp)
 	}
 
 	tty->driver_data = state;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0))
 	tty->low_latency = (state->port->flags & UPF_LOW_LATENCY) ? 1 : 0;
+#endif
 	tty->alt_speed = 0;
 	state->info->tty = tty;
 
@@ -1993,7 +2043,9 @@ static int mp_open(struct tty_struct *tty, struct file *filp)
 
 	uart_clear_mctrl(state->port, TIOCM_RTS);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))           
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0))           
 	try_module_get(THIS_MODULE);
+#endif
 #else
 	MOD_INC_USE_COUNT;
 #endif
@@ -2328,7 +2380,6 @@ normal->wait_until_sent         = mp_wait_until_sent;
 
 for (i = 0; i < drv->nr; i++) {
 	struct sb_uart_state *state = drv->state + i;
-
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12))
 	state->close_delay     = 5 * HZ / 10;
 	state->closing_wait    = 30 * HZ;
@@ -2391,6 +2442,8 @@ void mp_unregister_driver(struct uart_driver *drv)
 static int mp_add_one_port(struct uart_driver *drv, struct sb_uart_port *port)
 {
 	struct sb_uart_state *state;
+	struct device *devr;
+
 	int ret = 0;
 
 
@@ -2413,8 +2466,17 @@ static int mp_add_one_port(struct uart_driver *drv, struct sb_uart_port *port)
 
 	mp_configure_port(drv, state, port);
 
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+
+	tty_port_link_device(&tt_port[port->line],drv->tty_driver,port->line);
+#endif
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0))
-	tty_register_device(drv->tty_driver, port->line, port->dev);
+	devr = tty_register_device(drv->tty_driver, port->line, port->dev);
+	if(IS_ERR(devr))
+	{
+		printk("tty_register_device ERROR\n");
+	}
 #endif
 
 out:
@@ -2692,18 +2754,30 @@ static _INLINE_ void receive_chars(struct mp_port *mtpt, int *status )
 				mtpt->port.icount.overrun++;
 				flag = TTY_OVERRUN;
 			}
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0))
+			tty_insert_flip_char(&tt_port[mtpt->port.line], ch, flag);
+#else
 			tty_insert_flip_char(tty, ch, flag);
+#endif
 		}
 		else
 		{
 			ch = serial_inp(mtpt, UART_RX);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0))
+			tty_insert_flip_char(&tt_port[mtpt->port.line], ch, 0);
+#else
 			tty_insert_flip_char(tty, ch, 0);
+#endif
 		}
 ignore_char:
 		lsr = serial_inp(mtpt, UART_LSR);
 	} while ((lsr & UART_LSR_DR) && (max_count-- > 0));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0))
+	tty_flip_buffer_push(&tt_port[mtpt->port.line]);
+#else
 	tty_flip_buffer_push(tty);
+#endif
 }
 
 
@@ -2732,7 +2806,6 @@ static _INLINE_ void transmit_chars(struct mp_port *mtpt)
 		count = mtpt->port.fifosize;
 	}
 
-	printk("[%d] mdmode: %x\n", mtpt->port.line, mtpt->port.mdmode);
 	do {
 #if 0
 		/* check multi-drop mode */
@@ -2831,10 +2904,10 @@ static void multi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		mtpt = list_entry(lhead, struct mp_port, list);
 		
 		iir = serial_in(mtpt, UART_IIR);
-		printk("intrrupt! port %d, iir 0x%x\n", mtpt->port.line, iir); //wlee
+		//printk("intrrupt! port %d, iir 0x%x\n", mtpt->port.line, iir); //wlee
 		if (!(iir & UART_IIR_NO_INT)) 
 		{
-			printk("interrupt handle\n");
+			//printk("interrupt handle\n");
 			spin_lock(&mtpt->port.lock);
 			multi_handle_port(mtpt);
 			spin_unlock(&mtpt->port.lock);
@@ -3354,7 +3427,7 @@ static const char * multi_type(struct sb_uart_port *port)
 	return uart_config[type].name;
 }
 
-static struct sb_uart_ops multi_pops = {
+static const struct sb_uart_ops multi_pops = {
 	.tx_empty   = multi_tx_empty,
 	.set_mctrl  = multi_set_mctrl,
 	.get_mctrl  = multi_get_mctrl,
@@ -3375,7 +3448,10 @@ static struct sb_uart_ops multi_pops = {
 };
 
 static struct uart_driver multi_reg = {
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0) || LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,0))           
 	.owner          = THIS_MODULE,
+#endif
 	.driver_name    = "goldel_tulip",
 	.dev_name       = "ttyMP",
 	.major          = SB_TTY_MP_MAJOR,
@@ -3427,7 +3503,11 @@ static void __init multi_init_ports(void)
 				osc = 0;
 			for(j=0;j<osc;j++)
 				mtpt->port.uartclk *= 2;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,19,0))           
+			mtpt->port.flags    |= STD_COMX_FLAGS | UPF_SHARE_IRQ ;
+#else
 			mtpt->port.flags    |= STD_COM_FLAGS | UPF_SHARE_IRQ ;
+#endif
 			mtpt->port.iotype   = UPIO_PORT;
 			mtpt->port.ops      = &multi_pops;
 
@@ -3439,7 +3519,7 @@ static void __init multi_init_ports(void)
 			else
 			{
 				b_ret = read_option_register(mtpt,(MP_OPTR_IIR0 + i/8));
-				printk("IIR_RET = %x\n",b_ret);
+				//printk("IIR_RET = %x\n",b_ret);
 			}
 
 			if(IIR_RS232 == (b_ret & IIR_RS232))
@@ -3471,6 +3551,11 @@ static void __init multi_register_ports(struct uart_driver *drv)
 		mtpt->port.ops = &multi_pops;
 		init_timer(&mtpt->timer);
 		mtpt->timer.function = multi_timeout;
+		
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,0))
+		tty_port_init(&tt_port[i]);
+		//t_port.ops = &multi_port_ops;
+#endif
 		mp_add_one_port(drv, &mtpt->port);
 	}
 }
@@ -3490,8 +3575,10 @@ static void __init multi_register_ports(struct uart_driver *drv)
 static int pci_remap_base(struct pci_dev *pcidev, unsigned int offset, 
 		unsigned int address, unsigned int size) 
 {
+#if 0
 	struct resource *root;
 	unsigned index = (offset - 0x10) >> 2;
+#endif
 
 	pci_write_config_dword(pcidev, offset, address);
 #if 0
@@ -3637,6 +3724,7 @@ static int init_mp_dev(struct pci_dev *pcidev, mppcibrd_t brd)
 		case PCIE_DEVICE_ID_MP32 :
 		case PCI_DEVICE_ID_GT_MP32 :
 		case PCIE_DEVICE_ID_GT_MP32 :
+		case PCIE_DEVICE_ID_MP32B :
 			{
 				int portnum_hex=0;
 				portnum_hex = inb(sbdev->option_reg_addr);
@@ -3741,7 +3829,7 @@ printk("MULTI INIT\n");
 #endif
 
 		{
-printk("FOUND~~~\n");
+printk("MutiPort FOUND!\n");
 //	Cent OS bug fix
 //			if (mp_pciboards[i].device_id & 0x0800)
 			{
@@ -3786,7 +3874,6 @@ static void __exit multi_exit(void)
 
 module_init(multi_init);
 module_exit(multi_exit);
-
 MODULE_DESCRIPTION("SystemBase Multiport PCI/PCIe CORE");
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,18))
 MODULE_LICENSE("GPL");
