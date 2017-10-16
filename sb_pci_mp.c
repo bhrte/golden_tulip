@@ -2092,8 +2092,8 @@ static int mp_open(struct tty_struct *tty, struct file *filp)
 	tty->driver_data = state;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0))
 	tty->low_latency = (state->port->flags & UPF_LOW_LATENCY) ? 1 : 0;
-#endif
 	tty->alt_speed = 0;
+#endif
 	state->info->tty = tty;
 
 	if (tty_hung_up_p(filp)) {
